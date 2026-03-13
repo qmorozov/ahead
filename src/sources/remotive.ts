@@ -1,0 +1,37 @@
+import axios from "axios";
+import { z } from "zod";
+import { Job } from "../types";
+
+const JobSchema = z.object({
+  id: z.number().transform(String),
+  title: z.string().default(""),
+  company_name: z.string().default(""),
+  candidate_required_location: z.string().default("Remote"),
+  salary: z.string().default(""),
+  url: z.string().default(""),
+  tags: z.array(z.string()).default([]),
+  description: z.string().optional(),
+  publication_date: z.string().default(""),
+});
+
+const ResponseSchema = z.object({
+  jobs: z.array(JobSchema).default([]),
+});
+
+export async function fetchRemotive(): Promise<Job[]> {
+  const { data } = await axios.get("https://remotive.com/api/remote-jobs");
+  const { jobs } = ResponseSchema.parse(data);
+
+  return jobs.map((j) => ({
+    id: j.id,
+    title: j.title,
+    company: j.company_name,
+    location: j.candidate_required_location,
+    salary: j.salary || undefined,
+    description: j.description,
+    url: j.url,
+    source: "Remotive",
+    tags: j.tags,
+    publishedAt: j.publication_date || new Date().toISOString(),
+  }));
+}
