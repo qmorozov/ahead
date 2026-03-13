@@ -32,7 +32,6 @@ export async function fetchWeWorkRemotely(): Promise<Job[]> {
 }
 
 function extractCompany(title: string): string {
-  // WWR titles are often "Company: Job Title"
   const colonIndex = title.indexOf(":");
   if (colonIndex > 0) {
     return title.substring(0, colonIndex).trim();

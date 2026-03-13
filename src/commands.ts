@@ -16,16 +16,18 @@ import {
   setOnWizardComplete,
 } from "./wizard";
 import { logError } from "./logger";
+import { SENIORITY_LEVELS } from "./utils";
 
 type SettingKey =
   | "keywords"
   | "excludeKeywords"
   | "locations"
+  | "seniority"
   | "checkIntervalMinutes"
   | "maxJobAgeDays";
 type ArraySettingKey = "keywords" | "excludeKeywords" | "locations";
 
-const waitingForInput = new Map<string, SettingKey>();
+const waitingForInput = new Map<string, { key: SettingKey; messageId: number }>();
 
 const PAUSE_MSG = "Paused. You won't get new jobs until you resume.";
 const RESUME_MSG = "Resumed! You'll get new jobs again.";
@@ -39,6 +41,9 @@ function buildSettingsKeyboard(settings: UserSettings) {
       ],
       [
         { text: "Locations", callback_data: "set:locations" },
+        { text: "Seniority", callback_data: "set:seniority" },
+      ],
+      [
         { text: "Interval", callback_data: "set:checkIntervalMinutes" },
       ],
       [
@@ -53,6 +58,7 @@ const LABELS: Record<SettingKey, string> = {
   keywords: "Keywords",
   excludeKeywords: "Exclude",
   locations: "Locations",
+  seniority: "Seniority",
   checkIntervalMinutes: "Interval",
   maxJobAgeDays: "Max age",
 };
@@ -82,6 +88,24 @@ function buildArrayEditKeyboard(
   return { inline_keyboard: rows };
 }
 
+function buildSeniorityKeyboard(
+  selected: string[],
+): { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } {
+  const set = new Set(selected.map((s) => s.toLowerCase()));
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+
+  for (let i = 0; i < SENIORITY_LEVELS.length; i += 3) {
+    const row = SENIORITY_LEVELS.slice(i, i + 3).map((item) => ({
+      text: set.has(item.toLowerCase()) ? `✅ ${item}` : item,
+      callback_data: `set:sen:${item}`,
+    }));
+    rows.push(row);
+  }
+
+  rows.push([{ text: "← Back", callback_data: "set:back" }]);
+  return { inline_keyboard: rows };
+}
+
 function replyKeyboard(paused: boolean) {
   return {
     keyboard: [[{ text: "⚙️ Settings" }, { text: paused ? "▶ Resume" : "⏸ Pause" }]],
@@ -89,17 +113,62 @@ function replyKeyboard(paused: boolean) {
   };
 }
 
-function sendSettingsMenu(chatId: string, settings: UserSettings): void {
-  const text = `⚙️ Settings\n\n${formatSettings(settings)}`;
-  bot.sendMessage(chatId, text, {
-    reply_markup: buildSettingsKeyboard(settings),
-  });
+async function editOrSend(
+  chatId: string,
+  text: string,
+  markup: ReturnType<typeof buildSettingsKeyboard>,
+  messageId?: number,
+): Promise<void> {
+  if (messageId !== undefined) {
+    try {
+      await bot.editMessageText(text, {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: markup,
+      });
+      return;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "";
+      if (!msg.includes("message is not modified") && !msg.includes("message to edit not found")) {
+        throw err;
+      }
+    }
+  }
+  await bot.sendMessage(chatId, text, { reply_markup: markup });
 }
 
-function sendArrayEditor(chatId: string, key: ArraySettingKey, settings: UserSettings): void {
+function showSettingsMenu(chatId: string, settings: UserSettings, msgId?: number): void {
+  editOrSend(chatId, settingsText(settings), buildSettingsKeyboard(settings), msgId)
+    .catch((e) => logError("showSettingsMenu", e));
+}
+
+function showArrayEditor(chatId: string, key: ArraySettingKey, settings: UserSettings, msgId?: number): void {
+  editOrSend(chatId, arrayEditorText(key, settings), buildArrayEditKeyboard(key, settings[key]), msgId)
+    .catch((e) => logError("showArrayEditor", e));
+}
+
+function showSeniorityEditor(chatId: string, settings: UserSettings, msgId?: number): void {
+  editOrSend(chatId, seniorityText(settings), buildSeniorityKeyboard(settings.seniority), msgId)
+    .catch((e) => logError("showSeniorityEditor", e));
+}
+
+function settingsText(settings: UserSettings): string {
+  return `⚙️ Settings\n\n${formatSettings(settings)}`;
+}
+
+function seniorityText(settings: UserSettings): string {
+  const selected = settings.seniority;
+  const lines = [`⚙️ Seniority\n`];
+  if (selected.length > 0) {
+    lines.push(`Selected: ${selected.join(", ")}\n`);
+  }
+  lines.push("Tap to toggle. Empty = any level.");
+  return lines.join("\n");
+}
+
+function arrayEditorText(key: ArraySettingKey, settings: UserSettings): string {
   const items = settings[key];
   const label = LABELS[key];
-
   const lines = [`⚙️ ${label}\n`];
   if (items.length > 0) {
     lines.push(`${items.join(", ")}\n`);
@@ -107,13 +176,7 @@ function sendArrayEditor(chatId: string, key: ArraySettingKey, settings: UserSet
   } else {
     lines.push("Nothing here yet. Type to add, comma-separated.");
   }
-
-  bot.sendMessage(chatId, lines.join("\n"), {
-    reply_markup: {
-      ...buildArrayEditKeyboard(key, items),
-      input_field_placeholder: INPUT_HINTS[key],
-    } as ReturnType<typeof buildArrayEditKeyboard>,
-  });
+  return lines.join("\n");
 }
 
 function togglePause(chatId: string): UserSettings | null {
@@ -134,6 +197,10 @@ export function setOnUserStarted(cb: (chatId: string) => void): void {
 
 export function setOnSettingsChanged(cb: () => void): void {
   onSettingsChanged = cb;
+}
+
+function tryDelete(chatId: string, messageId: number): void {
+  bot.deleteMessage(chatId, messageId).catch(() => {});
 }
 
 export function registerCommands(): void {
@@ -170,7 +237,7 @@ export function registerCommands(): void {
       return;
     }
 
-    sendSettingsMenu(chatId, settings);
+    showSettingsMenu(chatId, settings);
   });
 
   bot.onText(/\/cancel/, (msg) => {
@@ -186,7 +253,7 @@ export function registerCommands(): void {
 
     const settings = loadSettings(chatId);
     if (settings) {
-      sendSettingsMenu(chatId, settings);
+      showSettingsMenu(chatId, settings);
     } else {
       bot.sendMessage(chatId, "Cancelled.");
     }
@@ -196,6 +263,7 @@ export function registerCommands(): void {
     if (!query.data || !query.message) return;
 
     const chatId = String(query.message.chat.id);
+    const msgId = query.message.message_id;
 
     if (query.data.startsWith("job:")) {
       const id = query.data.replace("job:", "");
@@ -227,27 +295,43 @@ export function registerCommands(): void {
       bot.answerCallbackQuery(query.id, {
         text: settings.paused ? PAUSE_MSG : RESUME_MSG,
       });
-      sendSettingsMenu(chatId, settings);
+      showSettingsMenu(chatId, settings, msgId);
       return;
     }
 
-    // Back to settings menu
     if (query.data === "set:back") {
-      const key = waitingForInput.get(chatId);
+      const pending = waitingForInput.get(chatId);
       waitingForInput.delete(chatId);
       const settings = loadSettings(chatId);
       if (settings) {
-        if (key) {
-          bot.answerCallbackQuery(query.id, { text: `${LABELS[key]} saved.` });
+        if (pending) {
+          bot.answerCallbackQuery(query.id, { text: `${LABELS[pending.key]} saved.` });
         } else {
           bot.answerCallbackQuery(query.id);
         }
-        sendSettingsMenu(chatId, settings);
+        showSettingsMenu(chatId, settings, msgId);
       }
       return;
     }
 
-    // Remove item from array setting
+    if (query.data.startsWith("set:sen:")) {
+      const level = query.data.replace("set:sen:", "");
+      const settings = loadSettings(chatId);
+      if (!settings) return;
+
+      const lower = level.toLowerCase();
+      const idx = settings.seniority.findIndex((s) => s.toLowerCase() === lower);
+      if (idx >= 0) {
+        settings.seniority.splice(idx, 1);
+      } else {
+        settings.seniority.push(level);
+      }
+      saveSettings(settings);
+      bot.answerCallbackQuery(query.id);
+      showSeniorityEditor(chatId, settings, msgId);
+      return;
+    }
+
     if (query.data.startsWith("set:rm:")) {
       const parts = query.data.replace("set:rm:", "").split(":");
       const key = parts[0] as ArraySettingKey;
@@ -262,11 +346,10 @@ export function registerCommands(): void {
       settings[key] = settings[key].filter((item) => item !== value);
       saveSettings(settings);
       bot.answerCallbackQuery(query.id, { text: `Removed "${value}"` });
-      sendArrayEditor(chatId, key, settings);
+      showArrayEditor(chatId, key, settings, msgId);
       return;
     }
 
-    // Open setting editor
     if (query.data.startsWith("set:")) {
       const key = query.data.replace("set:", "") as SettingKey;
       const settings = loadSettings(chatId);
@@ -278,24 +361,31 @@ export function registerCommands(): void {
 
       bot.answerCallbackQuery(query.id);
 
-      if (key === "keywords" || key === "excludeKeywords" || key === "locations") {
-        waitingForInput.set(chatId, key);
-        sendArrayEditor(chatId, key, settings);
+      if (key === "seniority") {
+        showSeniorityEditor(chatId, settings, msgId);
         return;
       }
 
-      waitingForInput.set(chatId, key);
+      if (key === "keywords" || key === "excludeKeywords" || key === "locations") {
+        waitingForInput.set(chatId, { key, messageId: msgId });
+        editOrSend(chatId, arrayEditorText(key, settings), {
+          ...buildArrayEditKeyboard(key, settings[key]),
+          input_field_placeholder: INPUT_HINTS[key],
+        } as ReturnType<typeof buildArrayEditKeyboard>, msgId)
+          .catch((e) => logError("showArrayEditor", e));
+        return;
+      }
+
+      waitingForInput.set(chatId, { key, messageId: msgId });
       const current = settings[key];
       const prompt =
         key === "checkIntervalMinutes"
           ? `⚙️ Interval\n\nCurrently checking every ${current} minutes.\nType a new number.`
           : `⚙️ Max age\n\nCurrently ${current} days.\nType a new number, or 0 for no limit.`;
 
-      bot.sendMessage(chatId, prompt, {
-        reply_markup: {
-          inline_keyboard: [[{ text: "← Back", callback_data: "set:back" }]],
-        },
-      });
+      editOrSend(chatId, prompt, {
+        inline_keyboard: [[{ text: "← Back", callback_data: "set:back" }]],
+      }, msgId).catch((e) => logError("showNumericEditor", e));
     }
   });
 
@@ -305,11 +395,10 @@ export function registerCommands(): void {
 
     if (!text) return;
 
-    // Handle reply keyboard buttons
     if (text === "⚙️ Settings") {
       const settings = loadSettings(chatId);
       if (settings && isOnboarded(settings)) {
-        sendSettingsMenu(chatId, settings);
+        showSettingsMenu(chatId, settings);
       } else {
         bot.sendMessage(chatId, "Run /start first to set up your preferences.");
       }
@@ -333,31 +422,32 @@ export function registerCommands(): void {
       return;
     }
 
-    const key = waitingForInput.get(chatId);
-    if (!key) return;
+    const pending = waitingForInput.get(chatId);
+    if (!pending) return;
 
     const settings = loadSettings(chatId);
     if (!settings) return;
 
-    if (key === "checkIntervalMinutes" || key === "maxJobAgeDays") {
+    tryDelete(chatId, msg.message_id);
+
+    if (pending.key === "checkIntervalMinutes" || pending.key === "maxJobAgeDays") {
       waitingForInput.delete(chatId);
       const num = parseInt(text.trim(), 10);
-      if (isNaN(num) || num < 0 || (key === "checkIntervalMinutes" && num < 5)) {
-        const hint = key === "checkIntervalMinutes" ? "Minimum is 5 minutes." : "Enter 0 or more.";
+      if (isNaN(num) || num < 0 || (pending.key === "checkIntervalMinutes" && num < 5)) {
+        const hint = pending.key === "checkIntervalMinutes" ? "Minimum is 5 minutes." : "Enter 0 or more.";
         bot.sendMessage(chatId, `Invalid number. ${hint}`);
         return;
       }
-      settings[key] = num;
+      settings[pending.key] = num;
       saveSettings(settings);
-      bot.sendMessage(chatId, `${LABELS[key]} saved.`);
-      sendSettingsMenu(chatId, settings);
-      if (key === "checkIntervalMinutes" && onSettingsChanged) onSettingsChanged();
+      showSettingsMenu(chatId, settings, pending.messageId);
+      if (pending.key === "checkIntervalMinutes" && onSettingsChanged) onSettingsChanged();
     } else {
       const newItems = parseCommaSeparated(text);
-      const merged = new Set([...settings[key], ...newItems]);
-      settings[key] = [...merged];
+      const merged = new Set([...settings[pending.key], ...newItems]);
+      settings[pending.key] = [...merged];
       saveSettings(settings);
-      sendArrayEditor(chatId, key as ArraySettingKey, settings);
+      showArrayEditor(chatId, pending.key as ArraySettingKey, settings, pending.messageId);
     }
   });
 }

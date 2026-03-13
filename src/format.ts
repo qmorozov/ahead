@@ -1,5 +1,5 @@
 import { Job, ParsedJob } from "./types";
-import { stripHtml } from "./utils";
+import { stripHtml, detectSeniority } from "./utils";
 
 function escapeHtml(text: string): string {
   return text
@@ -7,23 +7,6 @@ function escapeHtml(text: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
-}
-
-const SENIORITY_PATTERNS: [string, RegExp][] = [
-  ["Intern", /\bintern(?:ship)?\b/i],
-  ["Junior", /\b(?:junior|jr\.?)\b/i],
-  ["Middle", /\b(?:middle|mid[- ]level)\b/i],
-  ["Senior", /\b(?:senior|sr\.?)\b/i],
-  ["Staff", /\b(?:staff|principal)\b/i],
-  ["Lead", /\b(?:lead|team lead)\b/i],
-  ["Manager", /\b(?:manager|director|head of|vp\b)/i],
-];
-
-function detectSeniority(title: string): string | null {
-  for (const [label, pattern] of SENIORITY_PATTERNS) {
-    if (pattern.test(title)) return label;
-  }
-  return null;
 }
 
 function timeAgo(dateStr: string): string {

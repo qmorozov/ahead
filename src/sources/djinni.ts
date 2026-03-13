@@ -1,0 +1,98 @@
+import axios from "axios";
+import Parser from "rss-parser";
+import { Job } from "../types";
+
+const parser = new Parser({
+  timeout: 15_000,
+});
+
+const FEED_URL = "https://djinni.co/jobs/rss/";
+
+export async function fetchDjinni(): Promise<Job[]> {
+  const feed = await parser.parseURL(FEED_URL);
+
+  return feed.items.map((item) => ({
+    id: item.guid ?? item.link ?? "",
+    title: item.title ?? "",
+    company: extractCompany(item.content ?? ""),
+    location: "",
+    description: item.content || item.contentSnippet,
+    url: item.link ?? "",
+    source: "Djinni",
+    tags: item.categories?.filter(Boolean) ?? [],
+    publishedAt: item.isoDate ?? new Date().toISOString(),
+  }));
+}
+
+const NOT_COMPANY =
+  /^(about|project|role|position|responsibilities|requirements|overview|customer$|gambling|the\s|we\s|our\s|your\s|join\s|що|як|ми|про|вимоги|обов|опис)/i;
+
+const JOB_TITLE_WORDS =
+  /\b(intern|developer|manager|engineer|designer|analyst|specialist|lead\b|senior|junior|middle|head of|recruiter|buyer|officer)\b/i;
+
+function extractCompany(html: string): string {
+  const strong = html.match(/<strong>([^<]+)<\/strong>/);
+  const raw = strong?.[1]
+    ?.replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/[:\u2014\u2013]/g, "")
+    .trim();
+
+  if (raw && raw.length <= 40 && !NOT_COMPANY.test(raw) && !JOB_TITLE_WORDS.test(raw)) {
+    return raw;
+  }
+
+  return "";
+}
+
+interface EnrichmentData {
+  company: string;
+  location: string;
+}
+
+const enrichCache = new Map<string, EnrichmentData>();
+const MAX_ENRICH_CACHE = 500;
+
+function setCache(url: string, data: EnrichmentData): void {
+  if (enrichCache.size >= MAX_ENRICH_CACHE) {
+    const first = enrichCache.keys().next().value!;
+    enrichCache.delete(first);
+  }
+  enrichCache.set(url, data);
+}
+
+function parseJsonLd(html: string): EnrichmentData {
+  const match = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/);
+  if (!match) return { company: "", location: "" };
+
+  try {
+    const ld = JSON.parse(match[1]!);
+    return {
+      company: ld.hiringOrganization?.name ?? "",
+      location: ld.jobLocationType === "TELECOMMUTE" ? "Remote" : "",
+    };
+  } catch {
+    return { company: "", location: "" };
+  }
+}
+
+export async function enrichJob(job: Job): Promise<void> {
+  if (job.company && job.location) return;
+
+  const cached = enrichCache.get(job.url);
+  if (cached) {
+    if (!job.company) job.company = cached.company;
+    if (!job.location) job.location = cached.location;
+    return;
+  }
+
+  try {
+    const { data } = await axios.get(job.url, { timeout: 10_000 });
+    const enriched = parseJsonLd(data as string);
+    setCache(job.url, enriched);
+    if (!job.company) job.company = enriched.company;
+    if (!job.location) job.location = enriched.location;
+  } catch {
+    setCache(job.url, { company: "", location: "" });
+  }
+}

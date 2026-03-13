@@ -315,7 +315,6 @@ export async function handleWizardCallback(
     return;
   }
 
-  // Toggle preset buttons — match against all step prefixes
   for (const cfg of Object.values(STEPS)) {
     const prefix = `wiz:${cfg.prefix}:`;
     if (data.startsWith(prefix)) {
@@ -350,9 +349,7 @@ export async function handleWizardTextInput(
 
   try {
     await bot.deleteMessage(chatId, messageId);
-  } catch {
-    // May fail if bot lacks delete permissions
-  }
+  } catch {}
 
   await renderStep(session);
 }

@@ -1,5 +1,5 @@
 import { sources, fetchWithRetry } from "./sources";
-import { filterJobs, isRelevantByTags } from "./filter";
+import { filterJobs, buildTagSet, isRelevantByTags, matchesSeniority } from "./filter";
 import { sendJob, sendJobs } from "./bot";
 import {
   isOnboarded,
@@ -12,10 +12,12 @@ import {
   markSeen,
   markSeenBatch,
   isFirstRun,
+  incrementJobsSent,
 } from "./db";
 import { log, logError } from "./logger";
 import { Job, ParsedJob } from "./types";
 import { parseJobDescription } from "./llm";
+import { enrichJob } from "./sources/djinni";
 
 const CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 let cachedJobs: Map<string, Job[]> | null = null;
@@ -62,27 +64,37 @@ async function processForUser(
   const firstRun = isFirstRun(chatId);
 
   const allJobs: Job[] = [];
+  const keyOf = new Map<Job, string>();
 
   for (const [, jobs] of jobsBySource) {
     const filtered = filterJobs(jobs, settings);
-    const newJobs = filtered.filter((job) => !isSeen(chatId, jobKey(job)));
-    allJobs.push(...newJobs);
+    for (const job of filtered) {
+      const key = jobKey(job);
+      if (!isSeen(chatId, key)) {
+        allJobs.push(job);
+        keyOf.set(job, key);
+      }
+    }
   }
 
   const parsedMap = new Map<string, ParsedJob | null>();
 
   for (const job of allJobs) {
-    const key = jobKey(job);
+    const key = keyOf.get(job)!;
     const parsed = await parseJobDescription(key, job.description ?? "");
     parsedMap.set(key, parsed);
   }
 
   const relevantJobs: Job[] = [];
   const irrelevant: Job[] = [];
+  const tagSet = buildTagSet(settings.keywords);
+  const senioritySet = new Set(settings.seniority.map((s) => s.toLowerCase()));
 
   for (const job of allJobs) {
-    const parsed = parsedMap.get(jobKey(job)) ?? null;
-    if (!isRelevantByTags(parsed, settings.keywords)) {
+    const parsed = parsedMap.get(keyOf.get(job)!) ?? null;
+    if (!isRelevantByTags(parsed, tagSet, settings.keywords.length)) {
+      irrelevant.push(job);
+    } else if (!matchesSeniority(job.title, parsed, senioritySet)) {
       irrelevant.push(job);
     } else {
       relevantJobs.push(job);
@@ -93,26 +105,50 @@ async function processForUser(
     log(`[${chatId}] Filtered out ${irrelevant.length} irrelevant jobs via AI`);
   }
 
-  if (firstRun && relevantJobs.length > 0) {
+  const toEnrich = relevantJobs.filter((j) => j.source === "Djinni" && (!j.company || !j.location));
+  for (let i = 0; i < toEnrich.length; i += 5) {
+    await Promise.all(toEnrich.slice(i, i + 5).map((job) => enrichJob(job)));
+  }
+
+  let sentCount = 0;
+
+  if (allJobs.length === 0) {
+    log(`[${chatId}] No new jobs.`);
+  } else if (relevantJobs.length === 0) {
+    markSeenBatch(chatId, allJobs.map((j) => keyOf.get(j)!));
+    log(`[${chatId}] No relevant jobs (${allJobs.length} filtered out).`);
+  } else if (firstRun) {
     const sorted = [...relevantJobs].sort(
       (a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime(),
     );
     const newest = sorted[0]!;
     const rest = sorted.slice(1);
-    await sendJob(chatId, newest, parsedMap.get(jobKey(newest)) ?? null);
-    markSeen(chatId, jobKey(newest));
-    markSeenBatch(chatId, [...rest, ...irrelevant].map(jobKey));
-    log(`[${chatId}] First run: sent 1 newest, marked ${rest.length + irrelevant.length} as seen.`);
-  } else if (relevantJobs.length > 0) {
-    const sent = await sendJobs(chatId, relevantJobs, parsedMap);
-    markSeenBatch(chatId, sent.map(jobKey));
-    if (irrelevant.length > 0) markSeenBatch(chatId, irrelevant.map(jobKey));
-    log(`[${chatId}] Sent ${sent.length} notifications.`);
-  } else if (allJobs.length > 0) {
-    markSeenBatch(chatId, allJobs.map(jobKey));
-    log(`[${chatId}] No relevant jobs (${allJobs.length} filtered out by AI).`);
+    const newestKey = keyOf.get(newest)!;
+    await sendJob(chatId, newest, parsedMap.get(newestKey) ?? null);
+    markSeen(chatId, newestKey);
+    markSeenBatch(chatId, rest.map((j) => keyOf.get(j)!));
+    sentCount = 1;
+    log(`[${chatId}] First run: sent 1 newest, marked ${rest.length} skipped, ${irrelevant.length} irrelevant.`);
+  } else if (relevantJobs.length <= 3) {
+    for (const job of relevantJobs) {
+      await sendJob(chatId, job, parsedMap.get(keyOf.get(job)!) ?? null);
+    }
+    markSeenBatch(chatId, relevantJobs.map((j) => keyOf.get(j)!));
+    sentCount = relevantJobs.length;
+    log(`[${chatId}] Sent ${relevantJobs.length} job(s).`);
   } else {
-    log(`[${chatId}] No new jobs.`);
+    const sent = await sendJobs(chatId, relevantJobs, parsedMap);
+    markSeenBatch(chatId, sent.map((j) => keyOf.get(j)!));
+    sentCount = sent.length;
+    log(`[${chatId}] Sent digest: ${sent.length} jobs.`);
+  }
+
+  if (sentCount > 0 && irrelevant.length > 0) {
+    markSeenBatch(chatId, irrelevant.map((j) => keyOf.get(j)!));
+  }
+
+  if (sentCount > 0) {
+    incrementJobsSent(chatId, sentCount);
   }
 }
 

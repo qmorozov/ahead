@@ -4,16 +4,16 @@ import fs from "fs";
 import { Job, ParsedJob, ParsedJobSchema } from "./types";
 import { log } from "./logger";
 
-// --- Settings types ---
-
 export interface UserSettings {
   chatId: string;
   keywords: string[];
   excludeKeywords: string[];
   locations: string[];
+  seniority: string[];
   checkIntervalMinutes: number;
   maxJobAgeDays: number;
   paused: boolean;
+  jobsSent: number;
 }
 
 export function createDefaultSettings(chatId: string): UserSettings {
@@ -22,9 +22,11 @@ export function createDefaultSettings(chatId: string): UserSettings {
     keywords: [],
     excludeKeywords: [],
     locations: [],
+    seniority: [],
     checkIntervalMinutes: 30,
     maxJobAgeDays: 7,
     paused: false,
+    jobsSent: 0,
   };
 }
 
@@ -40,8 +42,10 @@ export function formatSettings(settings: UserSettings): string {
     `Keywords · ${fmt(settings.keywords, "—")}`,
     `Exclude · ${fmt(settings.excludeKeywords, "—")}`,
     `Locations · ${fmt(settings.locations, "any")}`,
+    `Seniority · ${fmt(settings.seniority, "any")}`,
     `Interval · ${settings.checkIntervalMinutes}min`,
     `Max age · ${settings.maxJobAgeDays > 0 ? `${settings.maxJobAgeDays}d` : "off"}`,
+    `Jobs sent · ${settings.jobsSent}`,
   ].join("\n");
 }
 
@@ -52,10 +56,8 @@ export function parseCommaSeparated(text: string): string[] {
     .filter(Boolean);
 }
 
-// --- Job key ---
-
 export function jobKey(job: Job): string {
-  return `${job.company.toLowerCase().trim()}::${job.title.toLowerCase().trim()}`;
+  return `${job.source.toLowerCase()}::${job.id}`;
 }
 
 const DB_DIR = path.join(process.cwd(), "data");
@@ -67,10 +69,8 @@ if (!fs.existsSync(DB_DIR)) {
 
 const db = new Database(DB_PATH);
 
-// WAL mode for better concurrent read/write performance
 db.pragma("journal_mode = WAL");
 
-// --- Schema ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS settings (
     chat_id TEXT PRIMARY KEY,
@@ -108,16 +108,24 @@ db.exec(`
   );
 `);
 
-// --- Settings ---
+for (const migration of [
+  `ALTER TABLE settings ADD COLUMN seniority TEXT NOT NULL DEFAULT '[]'`,
+  `ALTER TABLE settings ADD COLUMN jobs_sent INTEGER NOT NULL DEFAULT 0`,
+]) {
+  try {
+    db.exec(migration);
+  } catch {}
+}
 
 const stmtGetSettings = db.prepare(`SELECT * FROM settings WHERE chat_id = ?`);
 const stmtUpsertSettings = db.prepare(`
-  INSERT INTO settings (chat_id, keywords, exclude_keywords, locations, check_interval_minutes, max_job_age_days, paused)
-  VALUES (@chat_id, @keywords, @exclude_keywords, @locations, @check_interval_minutes, @max_job_age_days, @paused)
+  INSERT INTO settings (chat_id, keywords, exclude_keywords, locations, seniority, check_interval_minutes, max_job_age_days, paused, jobs_sent)
+  VALUES (@chat_id, @keywords, @exclude_keywords, @locations, @seniority, @check_interval_minutes, @max_job_age_days, @paused, 0)
   ON CONFLICT(chat_id) DO UPDATE SET
     keywords = @keywords,
     exclude_keywords = @exclude_keywords,
     locations = @locations,
+    seniority = @seniority,
     check_interval_minutes = @check_interval_minutes,
     max_job_age_days = @max_job_age_days,
     paused = @paused
@@ -139,9 +147,11 @@ function rowToSettings(row: Record<string, unknown>): UserSettings {
     keywords: parseJsonArray(row.keywords),
     excludeKeywords: parseJsonArray(row.exclude_keywords),
     locations: parseJsonArray(row.locations),
+    seniority: parseJsonArray(row.seniority),
     checkIntervalMinutes: row.check_interval_minutes as number,
     maxJobAgeDays: row.max_job_age_days as number,
     paused: (row.paused as number) === 1,
+    jobsSent: (row.jobs_sent as number) ?? 0,
   };
 }
 
@@ -156,6 +166,7 @@ export function saveSettings(settings: UserSettings): void {
     keywords: JSON.stringify(settings.keywords),
     exclude_keywords: JSON.stringify(settings.excludeKeywords),
     locations: JSON.stringify(settings.locations),
+    seniority: JSON.stringify(settings.seniority),
     check_interval_minutes: settings.checkIntervalMinutes,
     max_job_age_days: settings.maxJobAgeDays,
     paused: settings.paused ? 1 : 0,
@@ -166,8 +177,6 @@ export function loadAllSettings(): UserSettings[] {
   const rows = stmtAllSettings.all() as Record<string, unknown>[];
   return rows.map(rowToSettings);
 }
-
-// --- Seen Jobs ---
 
 const stmtIsSeen = db.prepare(`SELECT 1 FROM seen_jobs WHERE chat_id = ? AND job_key = ?`);
 const stmtMarkSeen = db.prepare(`INSERT OR IGNORE INTO seen_jobs (chat_id, job_key) VALUES (?, ?)`);
@@ -204,8 +213,6 @@ export function pruneSeen(chatId: string): void {
   stmtPruneSeen.run(chatId, chatId);
 }
 
-// --- Parsed Jobs Cache ---
-
 const stmtGetParsed = db.prepare(`SELECT parsed_json FROM parsed_jobs WHERE job_key = ?`);
 const stmtSetParsed = db.prepare(`
   INSERT OR REPLACE INTO parsed_jobs (job_key, parsed_json) VALUES (?, ?)
@@ -236,8 +243,6 @@ export function pruneParsedCache(maxAgeDays: number = 30): void {
     log(`Pruned ${result.changes} old parsed_jobs entries`);
   }
 }
-
-// --- Wizard Sessions ---
 
 interface WizardSessionRow {
   chatId: string;
@@ -287,6 +292,14 @@ export function deleteWizardSession(chatId: string): void {
 export function loadAllWizardSessions(): WizardSessionRow[] {
   const rows = stmtAllWizards.all() as Record<string, unknown>[];
   return rows.map(rowToWizard);
+}
+
+const stmtIncrementJobsSent = db.prepare(
+  `UPDATE settings SET jobs_sent = jobs_sent + ? WHERE chat_id = ?`,
+);
+
+export function incrementJobsSent(chatId: string, count: number): void {
+  stmtIncrementJobsSent.run(count, chatId);
 }
 
 export function closeDb(): void {

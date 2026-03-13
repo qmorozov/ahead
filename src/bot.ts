@@ -8,8 +8,6 @@ import { sleep } from "./utils";
 
 export const bot = new TelegramBot(config.telegramBotToken, { polling: true });
 
-// --- Job storage for digest callbacks ---
-
 interface StoredJob {
   job: Job;
   parsed: ParsedJob | null;
@@ -30,7 +28,6 @@ function cleanupPendingJobs(): void {
   for (const [id, entry] of pendingJobs) {
     if (entry.storedAt < cutoff) pendingJobs.delete(id);
   }
-  // Hard cap: drop oldest entries if still too large
   if (pendingJobs.size > MAX_PENDING) {
     const excess = pendingJobs.size - MAX_PENDING;
     const keys = [...pendingJobs.keys()].slice(0, excess);
@@ -41,8 +38,6 @@ function cleanupPendingJobs(): void {
 export function getStoredJob(id: string): { job: Job; parsed: ParsedJob | null } | undefined {
   return pendingJobs.get(id);
 }
-
-// --- Send single job (detail view / first run) ---
 
 export async function sendJob(
   chatId: string,
@@ -64,8 +59,6 @@ export async function sendJob(
     return false;
   }
 }
-
-// --- Send digest ---
 
 const DIGEST_PAGE_SIZE = 10;
 const BUTTONS_PER_ROW = 5;
