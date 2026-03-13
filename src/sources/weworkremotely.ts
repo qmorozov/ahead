@@ -5,7 +5,7 @@ const parser = new Parser({
   timeout: 15_000,
 });
 
-const FEEDS = ["https://weworkremotely.com/categories/remote-front-end-programming-jobs.rss"];
+const FEEDS = ["https://weworkremotely.com/remote-jobs.rss"];
 
 export async function fetchWeWorkRemotely(): Promise<Job[]> {
   const jobs: Job[] = [];

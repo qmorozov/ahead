@@ -1,0 +1,94 @@
+import Parser from "rss-parser";
+import { Job } from "../types";
+
+const parser = new Parser({
+  timeout: 15_000,
+});
+
+const FEED_URL = "https://hnrss.org/whoishiring/jobs?count=100";
+
+export async function fetchHN(): Promise<Job[]> {
+  const feed = await parser.parseURL(FEED_URL);
+  const jobs: Job[] = [];
+
+  for (const item of feed.items) {
+    const text = item.contentSnippet ?? item.content ?? "";
+    if (text.length < 20) continue;
+
+    const parsed = parsePosting(text);
+    if (!parsed.company) continue;
+
+    jobs.push({
+      id: item.guid ?? item.link ?? "",
+      title: parsed.title || "",
+      company: parsed.company,
+      location: parsed.location || "Remote",
+      description: item.content,
+      url: item.link ?? "",
+      source: "HN",
+      tags: parsed.tags,
+      publishedAt: item.isoDate ?? new Date().toISOString(),
+    });
+  }
+
+  return jobs;
+}
+
+interface ParsedPosting {
+  company: string;
+  title: string;
+  location: string;
+  tags: string[];
+}
+
+function parsePosting(text: string): ParsedPosting {
+  const result: ParsedPosting = { company: "", title: "", location: "", tags: [] };
+
+  const firstLine = text.split("\n")[0] ?? "";
+  const parts = firstLine.split("|").map((s) => s.trim());
+
+  if (parts.length >= 2) {
+    result.company = parts[0] ?? "";
+
+    for (let i = 1; i < parts.length; i++) {
+      const part = parts[i] ?? "";
+      const lower = part.toLowerCase();
+
+      if (!result.title && isTitle(lower)) {
+        result.title = part;
+      } else if (!result.location && isLocation(lower)) {
+        result.location = part;
+      }
+    }
+
+    const techParts = parts.filter((p) => isTech(p.toLowerCase()));
+    for (const tp of techParts) {
+      result.tags.push(
+        ...tp
+          .split(/[,/]/)
+          .map((t) => t.trim())
+          .filter(Boolean),
+      );
+    }
+  }
+
+  return result;
+}
+
+function isTitle(s: string): boolean {
+  return /\b(engineer|developer|designer|manager|lead|architect|devops|sre|qa|analyst|scientist|intern)\b/i.test(
+    s,
+  );
+}
+
+function isLocation(s: string): boolean {
+  return /\b(remote|onsite|hybrid|usa|europe|worldwide|global|uk|canada|germany|berlin|nyc|sf|san francisco)\b/i.test(
+    s,
+  );
+}
+
+function isTech(s: string): boolean {
+  return /\b(react|node|python|java|go|rust|typescript|ruby|rails|aws|gcp|azure|kubernetes|docker|postgres|graphql|vue|angular|swift|kotlin)\b/i.test(
+    s,
+  );
+}

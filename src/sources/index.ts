@@ -9,6 +9,10 @@ import { fetchHimalayas } from "./himalayas";
 import { fetchArbeitnow } from "./arbeitnow";
 import { fetchWeWorkRemotely } from "./weworkremotely";
 import { fetchDjinni } from "./djinni";
+import { fetchTheMuse } from "./themuse";
+import { fetchWorkingNomads } from "./workingnomads";
+import { fetchRemoteFirstJobs } from "./remotefirstjobs";
+import { fetchHN } from "./hn";
 
 axios.defaults.timeout = 15_000;
 
@@ -25,6 +29,10 @@ export const sources: Source[] = [
   { name: "Arbeitnow", fetch: fetchArbeitnow },
   { name: "WeWorkRemotely", fetch: fetchWeWorkRemotely },
   { name: "Djinni", fetch: fetchDjinni },
+  { name: "TheMuse", fetch: fetchTheMuse },
+  { name: "WorkingNomads", fetch: fetchWorkingNomads },
+  { name: "RemoteFirstJobs", fetch: fetchRemoteFirstJobs },
+  { name: "HN", fetch: fetchHN },
 ];
 
 export async function fetchWithRetry(source: Source): Promise<Job[]> {
