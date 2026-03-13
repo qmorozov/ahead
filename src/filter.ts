@@ -19,8 +19,8 @@ function getPattern(kw: string): RegExp {
     const suffix = endsWithWord ? "\\b" : "(?:$|\\W)";
     re = new RegExp(`${prefix}${escaped}${suffix}`, "i");
     if (patternCache.size >= MAX_PATTERN_CACHE) {
-      const first = patternCache.keys().next().value!;
-      patternCache.delete(first);
+      const first = patternCache.keys().next().value;
+      if (first !== undefined) patternCache.delete(first);
     }
     patternCache.set(kw, re);
   }

@@ -114,7 +114,10 @@ for (const migration of [
 ]) {
   try {
     db.exec(migration);
-  } catch {}
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "";
+    if (!msg.includes("duplicate column")) throw err;
+  }
 }
 
 const stmtGetSettings = db.prepare(`SELECT * FROM settings WHERE chat_id = ?`);

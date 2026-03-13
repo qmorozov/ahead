@@ -55,18 +55,18 @@ const MAX_ENRICH_CACHE = 500;
 
 function setCache(url: string, data: EnrichmentData): void {
   if (enrichCache.size >= MAX_ENRICH_CACHE) {
-    const first = enrichCache.keys().next().value!;
-    enrichCache.delete(first);
+    const first = enrichCache.keys().next().value;
+    if (first !== undefined) enrichCache.delete(first);
   }
   enrichCache.set(url, data);
 }
 
 function parseJsonLd(html: string): EnrichmentData {
   const match = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/);
-  if (!match) return { company: "", location: "" };
+  if (!match?.[1]) return { company: "", location: "" };
 
   try {
-    const ld = JSON.parse(match[1]!);
+    const ld = JSON.parse(match[1]);
     return {
       company: ld.hiringOrganization?.name ?? "",
       location: ld.jobLocationType === "TELECOMMUTE" ? "Remote" : "",

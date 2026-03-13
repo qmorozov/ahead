@@ -129,9 +129,8 @@ async function editOrSend(
       return;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "";
-      if (!msg.includes("message is not modified") && !msg.includes("message to edit not found")) {
-        throw err;
-      }
+      if (msg.includes("message is not modified")) return;
+      if (!msg.includes("message to edit not found")) throw err;
     }
   }
   await bot.sendMessage(chatId, text, { reply_markup: markup });
@@ -317,7 +316,10 @@ export function registerCommands(): void {
     if (query.data.startsWith("set:sen:")) {
       const level = query.data.replace("set:sen:", "");
       const settings = loadSettings(chatId);
-      if (!settings) return;
+      if (!settings) {
+        bot.answerCallbackQuery(query.id, { text: "Run /start first." });
+        return;
+      }
 
       const lower = level.toLowerCase();
       const idx = settings.seniority.findIndex((s) => s.toLowerCase() === lower);
@@ -368,11 +370,7 @@ export function registerCommands(): void {
 
       if (key === "keywords" || key === "excludeKeywords" || key === "locations") {
         waitingForInput.set(chatId, { key, messageId: msgId });
-        editOrSend(chatId, arrayEditorText(key, settings), {
-          ...buildArrayEditKeyboard(key, settings[key]),
-          input_field_placeholder: INPUT_HINTS[key],
-        } as ReturnType<typeof buildArrayEditKeyboard>, msgId)
-          .catch((e) => logError("showArrayEditor", e));
+        showArrayEditor(chatId, key, settings, msgId);
         return;
       }
 
