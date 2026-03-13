@@ -6,6 +6,7 @@ import {
   UserSettings,
   loadAllSettings,
   pruneParsedCache,
+  pruneCompanyUrls,
   pruneSeen,
   jobKey,
   isSeen,
@@ -18,6 +19,7 @@ import { log, logError } from "./logger";
 import { Job, ParsedJob } from "./types";
 import { parseJobDescription } from "./llm";
 import { enrichJob } from "./sources/djinni";
+import { enrichCompanyUrls } from "./company";
 
 const CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 let cachedJobs: Map<string, Job[]> | null = null;
@@ -119,6 +121,8 @@ async function processForUser(
     await Promise.all(toEnrich.slice(i, i + 5).map((job) => enrichJob(job)));
   }
 
+  await enrichCompanyUrls(relevantJobs);
+
   let sentCount = 0;
 
   if (allJobs.length === 0) {
@@ -187,6 +191,7 @@ export async function pollAllUsers(): Promise<void> {
     if (due.length === 0) return;
 
     pruneParsedCache();
+    pruneCompanyUrls();
     for (const s of due) pruneSeen(s.chatId);
 
     const jobsBySource = await fetchAllSources();

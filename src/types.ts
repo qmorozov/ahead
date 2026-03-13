@@ -10,6 +10,7 @@ export interface Job {
   seniority?: string;
   url: string;
   source: string;
+  companyUrl?: string;
   tags: string[];
   publishedAt: string;
 }

@@ -35,6 +35,11 @@ const MAX_MESSAGE_LENGTH = 4096;
 const CATEGORY_WORDS =
   /programming|jobs|remote|development|design|management|marketing|writing|devops & sysadmin/i;
 
+function companyHtml(job: Job): string {
+  const name = escapeHtml(job.company);
+  return job.companyUrl ? `<a href="${escapeHtml(job.companyUrl)}">${name}</a>` : name;
+}
+
 function techTags(job: Job, parsed: ParsedJob | null, limit: number): string[] {
   return (
     parsed?.primaryTags?.slice(0, limit) ??
@@ -46,7 +51,7 @@ function techTags(job: Job, parsed: ParsedJob | null, limit: number): string[] {
 }
 
 export function formatDigestItem(index: number, job: Job, parsed: ParsedJob | null): string {
-  const title = `<b>${index}.</b> <a href="${escapeHtml(job.url)}">${escapeHtml(job.title)}</a> — ${escapeHtml(job.company)}`;
+  const title = `<b>${index}.</b> <a href="${escapeHtml(job.url)}">${escapeHtml(job.title)}</a> — ${companyHtml(job)}`;
 
   const tags = techTags(job, parsed, 4);
   const salary = parsed?.salary || job.salary;
@@ -109,7 +114,7 @@ export function formatMessage(job: Job, parsed: ParsedJob | null): string {
 
   const lines = [
     `<a href="${escapeHtml(job.url)}"><b>${escapeHtml(job.title)}</b></a>`,
-    `@ ${escapeHtml(job.company)}`,
+    `@ ${companyHtml(job)}`,
     `\n🌍 ${escapeHtml(job.location)}`,
     level && `<b>Level:</b> ${escapeHtml(level)}`,
     salary && `<b>Salary:</b> ${escapeHtml(salary)}`,

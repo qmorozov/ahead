@@ -97,6 +97,12 @@ db.exec(`
     parsed_at INTEGER NOT NULL DEFAULT (unixepoch())
   );
 
+  CREATE TABLE IF NOT EXISTS company_urls (
+    name TEXT PRIMARY KEY,
+    url TEXT,
+    resolved_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+
   CREATE TABLE IF NOT EXISTS wizard_sessions (
     chat_id TEXT PRIMARY KEY,
     step TEXT NOT NULL,
@@ -236,14 +242,39 @@ export function setCachedParse(jobKey: string, parsed: ParsedJob): void {
   stmtSetParsed.run(jobKey, JSON.stringify(parsed));
 }
 
+const stmtGetCompanyUrl = db.prepare(`SELECT url FROM company_urls WHERE name = ?`);
+const stmtSetCompanyUrl = db.prepare(
+  `INSERT OR REPLACE INTO company_urls (name, url) VALUES (?, ?)`,
+);
+
+export function getCachedCompanyUrl(name: string): string | null | undefined {
+  const row = stmtGetCompanyUrl.get(name) as { url: string | null } | undefined;
+  if (!row) return undefined; // not in cache
+  return row.url; // null means "resolved but not found"
+}
+
+export function setCachedCompanyUrl(name: string, url: string | null): void {
+  stmtSetCompanyUrl.run(name, url);
+}
+
 const stmtPruneParsed = db.prepare(`
   DELETE FROM parsed_jobs WHERE parsed_at < unixepoch() - ?
+`);
+const stmtPruneCompanyUrls = db.prepare(`
+  DELETE FROM company_urls WHERE resolved_at < unixepoch() - ?
 `);
 
 export function pruneParsedCache(maxAgeDays: number = 30): void {
   const result = stmtPruneParsed.run(maxAgeDays * 86400);
   if (result.changes > 0) {
     log(`Pruned ${result.changes} old parsed_jobs entries`);
+  }
+}
+
+export function pruneCompanyUrls(maxAgeDays: number = 90): void {
+  const result = stmtPruneCompanyUrls.run(maxAgeDays * 86400);
+  if (result.changes > 0) {
+    log(`Pruned ${result.changes} old company_urls entries`);
   }
 }
 
