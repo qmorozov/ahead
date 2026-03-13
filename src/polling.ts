@@ -21,6 +21,8 @@ const CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 let cachedJobs: Map<string, Job[]> | null = null;
 let cachedAt = 0;
 
+const lastPolledAt = new Map<string, number>();
+
 async function fetchAllSources(): Promise<Map<string, Job[]>> {
   if (cachedJobs && Date.now() - cachedAt < CACHE_TTL_MS) {
     return cachedJobs;
@@ -114,33 +116,52 @@ async function processForUser(
   }
 }
 
+let polling = false;
+
 export async function pollAllUsers(): Promise<void> {
-  const allSettings = loadAllSettings();
-  const active = allSettings.filter((s) => isOnboarded(s));
+  if (polling) return;
+  polling = true;
 
-  if (active.length === 0) {
-    log("No active users.");
-    return;
-  }
+  try {
+    const allSettings = loadAllSettings();
+    const active = allSettings.filter((s) => isOnboarded(s));
 
-  pruneParsedCache();
-  for (const s of active) pruneSeen(s.chatId);
-  log(`Polling for ${active.length} user(s)...`);
-
-  const jobsBySource = await fetchAllSources();
-
-  for (const settings of active) {
-    try {
-      await processForUser(settings, jobsBySource);
-    } catch (error) {
-      logError(`Poll [${settings.chatId}]`, error);
+    if (active.length === 0) {
+      log("No active users.");
+      return;
     }
-  }
 
-  log("Poll cycle complete.");
+    const now = Date.now();
+    const due = active.filter((s) => {
+      const last = lastPolledAt.get(s.chatId) ?? 0;
+      return now - last >= s.checkIntervalMinutes * 60_000;
+    });
+
+    if (due.length === 0) return;
+
+    pruneParsedCache();
+    for (const s of due) pruneSeen(s.chatId);
+
+    const jobsBySource = await fetchAllSources();
+    log(`Polling for ${due.length} of ${active.length} user(s)...`);
+
+    for (const settings of due) {
+      try {
+        await processForUser(settings, jobsBySource);
+        lastPolledAt.set(settings.chatId, now);
+      } catch (error) {
+        logError(`Poll [${settings.chatId}]`, error);
+      }
+    }
+
+    log("Poll cycle complete.");
+  } finally {
+    polling = false;
+  }
 }
 
 export async function pollSingleUser(settings: UserSettings): Promise<void> {
   const jobsBySource = await fetchAllSources();
   await processForUser(settings, jobsBySource);
+  lastPolledAt.set(settings.chatId, Date.now());
 }

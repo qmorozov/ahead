@@ -1,7 +1,7 @@
 import cron, { ScheduledTask } from "node-cron";
 import { bot } from "./bot";
 import { isOnboarded, loadSettings, loadAllSettings, closeDb } from "./db";
-import { registerCommands, setOnUserStarted } from "./commands";
+import { registerCommands, setOnUserStarted, setOnSettingsChanged } from "./commands";
 import { log, logError } from "./logger";
 import { pollAllUsers, pollSingleUser } from "./polling";
 import { migrateFromJson } from "./migrate";
@@ -24,12 +24,14 @@ function startCron(): void {
     pollAllUsers().catch((error) => logError("Poll cycle", error));
   });
 
-  log(`Cron started: every ${interval} minutes.`);
+  log(`Cron tick: every ${interval}min (per-user intervals apply).`);
 }
 
 migrateFromJson();
 restoreWizardSessions();
 registerCommands();
+
+setOnSettingsChanged(() => startCron());
 
 setOnUserStarted((chatId: string) => {
   const settings = loadSettings(chatId);

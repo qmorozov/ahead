@@ -126,9 +126,14 @@ function togglePause(chatId: string): UserSettings | null {
 }
 
 let onUserStarted: ((chatId: string) => void) | null = null;
+let onSettingsChanged: (() => void) | null = null;
 
 export function setOnUserStarted(cb: (chatId: string) => void): void {
   onUserStarted = cb;
+}
+
+export function setOnSettingsChanged(cb: () => void): void {
+  onSettingsChanged = cb;
 }
 
 export function registerCommands(): void {
@@ -346,6 +351,7 @@ export function registerCommands(): void {
       saveSettings(settings);
       bot.sendMessage(chatId, `${LABELS[key]} saved.`);
       sendSettingsMenu(chatId, settings);
+      if (key === "checkIntervalMinutes" && onSettingsChanged) onSettingsChanged();
     } else {
       const newItems = parseCommaSeparated(text);
       const merged = new Set([...settings[key], ...newItems]);
