@@ -1,6 +1,7 @@
 import axios from "axios";
 import { z } from "zod";
 import { Job } from "../types";
+import { formatSalaryRange } from "../utils";
 
 const JobSchema = z.object({
   id: z.number().transform(String),
@@ -26,18 +27,12 @@ export async function fetchJobicy(): Promise<Job[]> {
   const { jobs } = ResponseSchema.parse(data);
 
   return jobs.map((j) => {
-    let salary: string | undefined;
-    if (j.annualSalaryMin && j.annualSalaryMax) {
-      const currency = j.salaryCurrency ?? "USD";
-      salary = `${currency} ${j.annualSalaryMin.toLocaleString()} – ${j.annualSalaryMax.toLocaleString()}`;
-    }
-
     return {
       id: j.id,
       title: j.jobTitle,
       company: j.companyName,
       location: j.jobGeo,
-      salary,
+      salary: formatSalaryRange(j.annualSalaryMin, j.annualSalaryMax, j.salaryCurrency),
       description: j.jobDescription || j.jobExcerpt,
       url: j.url,
       source: "Jobicy",

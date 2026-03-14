@@ -1,6 +1,7 @@
 import axios from "axios";
 import { z } from "zod";
 import { Job } from "../types";
+import { formatSalaryRange } from "../utils";
 
 const JobSchema = z.object({
   guid: z.string().default(""),
@@ -14,7 +15,12 @@ const JobSchema = z.object({
   categories: z.array(z.string()).default([]),
   description: z.string().optional(),
   seniority: z.array(z.string()).default([]),
-  pubDate: z.union([z.string(), z.number()]).default(""),
+  pubDate: z
+    .union([z.string(), z.number()])
+    .default("")
+    .transform((v) =>
+      typeof v === "number" ? new Date(v * 1000).toISOString() : v || new Date().toISOString(),
+    ),
 });
 
 const ResponseSchema = z.object({
@@ -26,32 +32,21 @@ export async function fetchHimalayas(): Promise<Job[]> {
   const { jobs } = ResponseSchema.parse(data);
 
   return jobs.map((j) => {
-    let salary: string | undefined;
-    if (j.minSalary && j.maxSalary) {
-      const curr = j.currency ?? "USD";
-      salary = `${curr} ${j.minSalary.toLocaleString()} – ${j.maxSalary.toLocaleString()}`;
-    }
-
     const location =
       j.locationRestrictions.length > 0 ? j.locationRestrictions.join(", ") : "Remote";
-
-    const publishedAt =
-      typeof j.pubDate === "number"
-        ? new Date(j.pubDate * 1000).toISOString()
-        : j.pubDate || new Date().toISOString();
 
     return {
       id: j.guid,
       title: j.title,
       company: j.companyName,
       location,
-      salary,
+      salary: formatSalaryRange(j.minSalary, j.maxSalary, j.currency),
       description: j.description,
       seniority: j.seniority[0] || undefined,
       url: j.applicationLink,
       source: "Himalayas",
       tags: j.categories,
-      publishedAt,
+      publishedAt: j.pubDate,
     };
   });
 }

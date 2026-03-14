@@ -1,6 +1,6 @@
 import Groq from "groq-sdk";
 import { config } from "./config";
-import { getCachedParse, setCachedParse } from "./db";
+import { getCachedParse, setCachedParse, getLlmQuotaValue, setLlmQuotaValue } from "./db";
 import { hasContent } from "./format";
 import { log, logError } from "./logger";
 import { ParsedJob, ParsedJobSchema } from "./types";
@@ -40,8 +40,20 @@ const PARSES_PER_HOUR = 20;
 const QUOTA_COOLDOWN_MS = 60 * 60 * 1000;
 
 const requestTimestamps: number[] = [];
-const parseTimestamps: number[] = [];
-let quotaExhaustedAt = 0;
+
+const parseTimestamps: number[] = (() => {
+  const raw = getLlmQuotaValue("parse_timestamps");
+  if (!raw) return [];
+  try {
+    const arr = JSON.parse(raw) as number[];
+    const cutoff = Date.now() - 3_600_000;
+    return Array.isArray(arr) ? arr.filter((t) => t > cutoff) : [];
+  } catch {
+    return [];
+  }
+})();
+
+let quotaExhaustedAt = parseInt(getLlmQuotaValue("quota_exhausted_at") ?? "", 10) || 0;
 
 async function waitForRateLimit(): Promise<void> {
   while (true) {
@@ -101,6 +113,7 @@ async function callLLM(description: string): Promise<ParsedJob> {
       if (/tokens per day|tokens per hour/i.test(msg)) {
         log("LLM quota exhausted, pausing for 1h");
         quotaExhaustedAt = Date.now();
+        setLlmQuotaValue("quota_exhausted_at", String(quotaExhaustedAt));
         return emptyParsed();
       }
 
@@ -145,6 +158,7 @@ export async function parseJobDescription(
   if (!description || description.trim().length < 50) return null;
 
   parseTimestamps.push(Date.now());
+  setLlmQuotaValue("parse_timestamps", JSON.stringify(parseTimestamps));
   const parsed = await callLLM(description);
 
   if (hasContent(parsed)) {

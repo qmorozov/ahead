@@ -1,3 +1,7 @@
+import Parser from "rss-parser";
+
+export const rssParser = new Parser({ timeout: 15_000 });
+
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -19,6 +23,15 @@ export function detectSeniority(title: string): string | null {
     if (pattern.test(title)) return label;
   }
   return null;
+}
+
+export function formatSalaryRange(
+  min?: number | null,
+  max?: number | null,
+  currency = "USD",
+): string | undefined {
+  if (!min || !max) return undefined;
+  return `${currency} ${min.toLocaleString()} – ${max.toLocaleString()}`;
 }
 
 export function stripHtml(html: string): string {

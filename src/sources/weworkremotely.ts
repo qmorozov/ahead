@@ -1,48 +1,27 @@
-import Parser from "rss-parser";
+import { rssParser } from "../utils";
 import { Job } from "../types";
 
-const parser = new Parser({
-  timeout: 15_000,
-});
-
-const FEEDS = ["https://weworkremotely.com/remote-jobs.rss"];
+const FEED_URL = "https://weworkremotely.com/remote-jobs.rss";
 
 export async function fetchWeWorkRemotely(): Promise<Job[]> {
-  const jobs: Job[] = [];
+  const feed = await rssParser.parseURL(FEED_URL);
 
-  for (const feedUrl of FEEDS) {
-    const feed = await parser.parseURL(feedUrl);
+  return feed.items.map((item) => {
+    const raw = item.title ?? "";
+    const colon = raw.indexOf(":");
+    const [company, title] =
+      colon > 0 ? [raw.substring(0, colon).trim(), raw.substring(colon + 1).trim()] : ["", raw];
 
-    for (const item of feed.items) {
-      jobs.push({
-        id: item.guid ?? item.link ?? "",
-        title: extractTitle(item.title ?? ""),
-        company: extractCompany(item.title ?? ""),
-        location: "Remote",
-        description: item.content || item.contentSnippet,
-        url: item.link ?? "",
-        source: "WeWorkRemotely",
-        tags: item.categories ?? [],
-        publishedAt: item.isoDate ?? new Date().toISOString(),
-      });
-    }
-  }
-
-  return jobs;
-}
-
-function extractCompany(title: string): string {
-  const colonIndex = title.indexOf(":");
-  if (colonIndex > 0) {
-    return title.substring(0, colonIndex).trim();
-  }
-  return "";
-}
-
-function extractTitle(title: string): string {
-  const colonIndex = title.indexOf(":");
-  if (colonIndex > 0) {
-    return title.substring(colonIndex + 1).trim();
-  }
-  return title;
+    return {
+      id: item.guid ?? item.link ?? "",
+      title,
+      company,
+      location: "Remote",
+      description: item.content || item.contentSnippet,
+      url: item.link ?? "",
+      source: "WeWorkRemotely",
+      tags: item.categories ?? [],
+      publishedAt: item.isoDate ?? new Date().toISOString(),
+    };
+  });
 }

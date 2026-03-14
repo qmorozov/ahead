@@ -1,14 +1,10 @@
-import Parser from "rss-parser";
+import { rssParser } from "../utils";
 import { Job } from "../types";
-
-const parser = new Parser({
-  timeout: 15_000,
-});
 
 const FEED_URL = "https://hnrss.org/whoishiring/jobs?count=100";
 
 export async function fetchHN(): Promise<Job[]> {
-  const feed = await parser.parseURL(FEED_URL);
+  const feed = await rssParser.parseURL(FEED_URL);
   const jobs: Job[] = [];
 
   for (const item of feed.items) {

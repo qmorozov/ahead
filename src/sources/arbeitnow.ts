@@ -11,7 +11,10 @@ const JobSchema = z.object({
   url: z.string().default(""),
   tags: z.array(z.string()).default([]),
   description: z.string().optional(),
-  created_at: z.number().default(0),
+  created_at: z
+    .number()
+    .default(0)
+    .transform((v) => (v ? new Date(v * 1000).toISOString() : new Date().toISOString())),
 });
 
 const ResponseSchema = z.object({
@@ -31,8 +34,6 @@ export async function fetchArbeitnow(): Promise<Job[]> {
     url: j.url,
     source: "Arbeitnow",
     tags: j.tags,
-    publishedAt: j.created_at
-      ? new Date(j.created_at * 1000).toISOString()
-      : new Date().toISOString(),
+    publishedAt: j.created_at,
   }));
 }

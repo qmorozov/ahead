@@ -1,15 +1,11 @@
 import axios from "axios";
-import Parser from "rss-parser";
+import { rssParser } from "../utils";
 import { Job } from "../types";
-
-const parser = new Parser({
-  timeout: 15_000,
-});
 
 const FEED_URL = "https://djinni.co/jobs/rss/";
 
 export async function fetchDjinni(): Promise<Job[]> {
-  const feed = await parser.parseURL(FEED_URL);
+  const feed = await rssParser.parseURL(FEED_URL);
 
   return feed.items.map((item) => ({
     id: item.guid ?? item.link ?? "",

@@ -2,20 +2,26 @@ import TelegramBot from "node-telegram-bot-api";
 import { config } from "./config";
 import { Job, ParsedJob } from "./types";
 import { formatMessage, formatDigestItem, formatDigest } from "./format";
-import { jobKey } from "./db";
+import {
+  jobKey,
+  PendingJobEntry,
+  savePendingJobBatch,
+  deletePendingJob,
+  loadAllPendingJobs,
+  pruneExpiredPendingJobs,
+} from "./db";
 import { log, logError } from "./logger";
 import { sleep } from "./utils";
 
 export const bot = new TelegramBot(config.telegramBotToken, { polling: true });
 
-interface StoredJob {
-  job: Job;
-  parsed: ParsedJob | null;
-  storedAt: number;
-}
-
-const pendingJobs = new Map<string, StoredJob>();
+const pendingJobs = new Map<string, PendingJobEntry>();
 const STORE_TTL_MS = 24 * 60 * 60 * 1000;
+
+for (const entry of loadAllPendingJobs()) {
+  pendingJobs.set(entry.id, entry);
+}
+if (pendingJobs.size > 0) log(`Restored ${pendingJobs.size} pending jobs`);
 
 function generateId(): string {
   return Math.random().toString(36).substring(2, 8);
@@ -31,11 +37,15 @@ function cleanupPendingJobs(): void {
   if (pendingJobs.size > MAX_PENDING) {
     const excess = pendingJobs.size - MAX_PENDING;
     const keys = [...pendingJobs.keys()].slice(0, excess);
-    for (const key of keys) pendingJobs.delete(key);
+    for (const key of keys) {
+      pendingJobs.delete(key);
+      deletePendingJob(key);
+    }
   }
+  pruneExpiredPendingJobs(cutoff);
 }
 
-export function getStoredJob(id: string): { job: Job; parsed: ParsedJob | null } | undefined {
+export function getStoredJob(id: string): PendingJobEntry | undefined {
   return pendingJobs.get(id);
 }
 
@@ -71,6 +81,7 @@ export async function sendJobs(
   cleanupPendingJobs();
 
   const sent: Job[] = [];
+  const pendingEntries: PendingJobEntry[] = [];
 
   for (let page = 0; page < jobs.length; page += DIGEST_PAGE_SIZE) {
     const pageJobs = jobs.slice(page, page + DIGEST_PAGE_SIZE);
@@ -86,7 +97,10 @@ export async function sendJobs(
       items.push(formatDigestItem(globalIndex, job, parsed));
 
       const id = generateId();
-      pendingJobs.set(id, { job, parsed, storedAt: Date.now() });
+      const storedAt = Date.now();
+      const entry: PendingJobEntry = { id, job, parsed, storedAt };
+      pendingJobs.set(id, entry);
+      pendingEntries.push(entry);
 
       buttonRow.push({ text: String(globalIndex), callback_data: `job:${id}` });
 
@@ -96,8 +110,7 @@ export async function sendJobs(
       }
     }
 
-    const text =
-      page === 0 ? formatDigest(items, jobs.length) : items.join("\n\n");
+    const text = page === 0 ? formatDigest(items, jobs.length) : items.join("\n\n");
 
     try {
       await bot.sendMessage(chatId, text, {
@@ -115,6 +128,10 @@ export async function sendJobs(
     }
   }
 
-  log(`Sent digest: ${sent.length} jobs in ${Math.ceil(jobs.length / DIGEST_PAGE_SIZE)} message(s)`);
+  savePendingJobBatch(pendingEntries);
+
+  log(
+    `Sent digest: ${sent.length} jobs in ${Math.ceil(jobs.length / DIGEST_PAGE_SIZE)} message(s)`,
+  );
   return sent;
 }
