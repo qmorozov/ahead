@@ -97,12 +97,12 @@ export function matchesSeniority(
 
 export function isRelevantByTags(parsed: ParsedJob | null, tagSet: Set<string>, keywordCount: number): boolean {
   if (keywordCount === 0) return true;
-  if (!parsed || parsed.primaryTags.length === 0) return false;
+  if (!parsed || parsed.primaryTags.length === 0) return true;
 
   const matched = parsed.primaryTags.filter((tag) => tagSet.has(normalizeTag(tag)));
   const threshold = Math.min(0.5, Math.max(0.12, keywordCount * 0.02));
 
-  return matched.length >= 2 || matched.length / parsed.primaryTags.length >= threshold;
+  return matched.length / parsed.primaryTags.length >= threshold;
 }
 
 export function filterJobs(jobs: Job[], settings: UserSettings): Job[] {

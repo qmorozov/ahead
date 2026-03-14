@@ -27,6 +27,10 @@ function startCron(): void {
   log(`Cron tick: every ${interval}min (per-user intervals apply).`);
 }
 
+bot.on("polling_error", (error) => {
+  logError("Telegram polling", error);
+});
+
 migrateFromJson();
 restoreWizardSessions();
 registerCommands();
