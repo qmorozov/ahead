@@ -1,5 +1,6 @@
 import Parser from "rss-parser";
 import { HTTP_TIMEOUT } from "./config";
+import { KNOWN_TECHS } from "./techs";
 
 export const rssParser = new Parser({ timeout: HTTP_TIMEOUT });
 
@@ -63,10 +64,39 @@ export function normalizeForDedup(title: string, company: string): string {
   return `${t}::${c}`;
 }
 
+function editDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 0; i < a.length; i++) {
+    const curr = [i + 1];
+    for (let j = 0; j < b.length; j++)
+      curr[j + 1] = Math.min(prev[j + 1]! + 1, curr[j]! + 1, prev[j]! + (a[i] === b[j] ? 0 : 1));
+    prev = curr;
+  }
+  return prev[b.length]!;
+}
+
+const techSet = new Set(KNOWN_TECHS);
+
+function correctTech(input: string): string {
+  if (techSet.has(input)) return input;
+  let best = input;
+  let bestDist = 3;
+  for (const tech of KNOWN_TECHS) {
+    if (Math.abs(input.length - tech.length) > 2) continue;
+    const d = editDistance(input, tech);
+    if (d < bestDist) {
+      bestDist = d;
+      best = tech;
+    }
+  }
+  return best;
+}
+
 export function parseCommaSeparated(text: string): string[] {
   return text
     .split(",")
-    .map((s) => s.trim().toLowerCase())
+    .map((s) => correctTech(s.trim().toLowerCase()))
     .filter(Boolean);
 }
 

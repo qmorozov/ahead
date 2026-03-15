@@ -312,7 +312,7 @@ function seniorityDetected(title: string, parsed: ParsedJob | null): boolean {
 const GENERIC_TOOLS = new Set([
   "git", "github", "gitlab", "bitbucket",
   "docker", "linux", "unix", "bash", "shell",
-  "sql", "nosql",
+  "sql", "nosql", "postgresql", "mysql", "mongodb", "mariadb", "sqlite",
   "rest api", "restful", "graphql", "grpc",
   "ci/cd", "ci cd",
   "microservices", "monorepo",
@@ -320,7 +320,8 @@ const GENERIC_TOOLS = new Set([
   "jira", "confluence", "slack", "figma",
   "aws", "gcp", "azure",
   "pytest", "jest", "testing",
-  "redis", "elasticsearch",
+  "redis", "elasticsearch", "rabbitmq", "kafka",
+  "nginx", "elk stack",
 ]);
 
 function splitStackAndTools(keywords: string[]): { stack: string[]; all: string[] } {
@@ -394,6 +395,10 @@ export function scoreJob(job: Job, parsed: ParsedJob | null, ctx: ScoringContext
       score += 20 + (matched.length - 1) * 5;
       signals.push(`${matched.join(", ")} tags`);
     }
+    const nonGenericMatched = matched.filter((tag) => !GENERIC_TOOLS.has(tag.toLowerCase()));
+    if (parsed.primaryTags.length >= 4 && nonGenericMatched.length / parsed.primaryTags.length <= 0.25) {
+      return { score: -1, signals: ["low tag overlap"] };
+    }
   }
 
   if (ctx.expandedKeywords.length > 0 && desc) {
@@ -402,16 +407,25 @@ export function scoreJob(job: Job, parsed: ParsedJob | null, ctx: ScoringContext
   }
 
   if (ctx.stackKeywords.length > 0) {
-    const stackHit =
-      matchesAny(job.title, ctx.stackKeywords) ||
-      (job.tags.length > 0 && matchesAny(job.tags.join(" "), ctx.stackKeywords)) ||
-      (parsed?.primaryTags.length && parsed.primaryTags.some((tag) => {
-        const norm = normalizeTag(tag);
-        return ctx.tagSet.has(norm) && !GENERIC_TOOLS.has(tag.toLowerCase());
-      }));
-    if (!stackHit) {
-      const descHits = desc ? ctx.stackKeywords.filter((kw) => testKeyword(desc, kw)).length : 0;
-      if (descHits < 2) return { score: -1, signals: ["no stack match"] };
+    const titleHit = matchesAny(job.title, ctx.stackKeywords);
+    const tagHits = job.tags.length > 0 ? ctx.stackKeywords.filter((kw) => testKeyword(job.tags.join(" "), kw)).length : 0;
+    const llmHit = parsed && parsed.primaryTags.length > 0 && parsed.primaryTags.some((tag) => {
+      const norm = normalizeTag(tag);
+      return ctx.tagSet.has(norm) && !GENERIC_TOOLS.has(tag.toLowerCase());
+    });
+    const descHits = desc ? ctx.stackKeywords.filter((kw) => testKeyword(desc, kw)).length : 0;
+
+    if (!titleHit && !llmHit) {
+      if (tagHits < 2 && descHits < 2) return { score: -1, signals: ["no stack match"] };
+    }
+  }
+
+  if (ctx.roles.length > 0) {
+    const userRoles = new Set(ctx.roles.map((r) => r.toLowerCase()));
+    for (const [role, pattern] of Object.entries(ROLE_TITLE_PATTERNS)) {
+      if (!userRoles.has(role) && pattern.test(job.title)) {
+        return { score: -1, signals: [`wrong role: ${role}`] };
+      }
     }
   }
 
@@ -434,15 +448,7 @@ export function scoreJob(job: Job, parsed: ParsedJob | null, ctx: ScoringContext
     else if (n === 1) { score += 5; roleMatched = true; }
   }
 
-  if (ctx.roles.length > 0 && !roleMatched) {
-    const userRoles = new Set(ctx.roles.map((r) => r.toLowerCase()));
-    for (const [role, pattern] of Object.entries(ROLE_TITLE_PATTERNS)) {
-      if (!userRoles.has(role) && pattern.test(job.title)) {
-        return { score: -1, signals: [`wrong role: ${role}`] };
-      }
-    }
-    score -= 15;
-  }
+  if (ctx.roles.length > 0 && !roleMatched) score -= 15;
 
   if (
     ctx.senioritySet.size > 0 &&

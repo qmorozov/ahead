@@ -1,5 +1,6 @@
 import pThrottle from "p-throttle";
 import pRetry, { AbortError } from "p-retry";
+import axios from "axios";
 import Groq from "groq-sdk";
 import { config } from "./config";
 import { getCachedParse, setCachedParse, getLlmQuotaValue, setLlmQuotaValue } from "./db";
@@ -40,8 +41,9 @@ Example input: "We're looking for a Senior React developer with TypeScript exper
 Example output: {"requirements":["React expertise","TypeScript proficiency","PostgreSQL","Redis"],"niceToHave":["Docker","AWS"],"responsibilities":[],"seniority":"Senior","salary":null,"primaryTags":["react","typescript","postgresql","redis","docker","aws"]}`;
 
 const groq = config.groqApiKey ? new Groq({ apiKey: config.groqApiKey }) : null;
+const hasCerebras = !!config.cerebrasApiKey;
 
-const PARSES_PER_HOUR = 40;
+export const PARSES_PER_HOUR = 40;
 const QUOTA_COOLDOWN_MS = 60 * 60 * 1000;
 const MAX_INPUT_CHARS = 1000;
 const CLASSIFY_BATCH_SIZE = 10;
@@ -111,16 +113,16 @@ function isQuotaCoolingDown(): boolean {
   return quotaExhaustedAt > 0 && Date.now() - quotaExhaustedAt < QUOTA_COOLDOWN_MS;
 }
 
-async function callGroq(
+async function callProvider(
+  client: Groq,
+  provider: string,
   model: string,
   systemPrompt: string,
   userContent: string,
   throttleFn: ReturnType<typeof pThrottle>,
 ): Promise<string | null> {
-  if (!groq) return null;
-
   const throttled = throttleFn(async () => {
-    const response = await groq.chat.completions.create({
+    const response = await client.chat.completions.create({
       model,
       messages: [
         { role: "system", content: systemPrompt },
@@ -136,18 +138,61 @@ async function callGroq(
     retries: 2,
     minTimeout: 2000,
     onFailedAttempt: (error) => {
-      if (isQuotaError(error)) {
-        handleQuotaError();
-        throw new AbortError("Quota exhausted");
-      }
-      if (!isRetryableError(error)) {
-        throw new AbortError(`Non-retryable: ${errorMessage(error)}`);
-      }
-      log(`LLM retry ${error.attemptNumber}/2 (${error.retriesLeft} left)`);
+      if (isQuotaError(error)) throw new AbortError("Quota exhausted");
+      if (!isRetryableError(error)) throw new AbortError(`Non-retryable: ${errorMessage(error)}`);
+      log(`${provider} retry ${error.attemptNumber}/2`);
     },
   });
 }
 
+const GROQ_MODELS = { light: "llama-3.1-8b-instant", heavy: "llama-3.3-70b-versatile" };
+const CEREBRAS_MODELS = { light: "llama3.1-8b", heavy: "qwen-3-235b-a22b-instruct-2507" };
+
+async function callCerebras(model: string, systemPrompt: string, userContent: string): Promise<string | null> {
+  const { data } = await axios.post("https://api.cerebras.ai/v1/chat/completions", {
+    model,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userContent },
+    ],
+    response_format: { type: "json_object" },
+    temperature: 0,
+  }, {
+    headers: { Authorization: `Bearer ${config.cerebrasApiKey}` },
+    timeout: 30_000,
+  });
+  return data?.choices?.[0]?.message?.content ?? null;
+}
+
+async function callLLM(
+  tier: "light" | "heavy",
+  systemPrompt: string,
+  userContent: string,
+  throttleFn: ReturnType<typeof pThrottle>,
+): Promise<string | null> {
+  if (groq && !isQuotaCoolingDown()) {
+    try {
+      return await callProvider(groq, "Groq", GROQ_MODELS[tier], systemPrompt, userContent, throttleFn);
+    } catch (err) {
+      if (err instanceof AbortError && err.message === "Quota exhausted") {
+        handleQuotaError();
+        log("Falling back to Cerebras");
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  if (hasCerebras) {
+    try {
+      return await callCerebras(CEREBRAS_MODELS[tier], systemPrompt, userContent);
+    } catch (err) {
+      logError("Cerebras", err);
+    }
+  }
+
+  return null;
+}
 
 interface ClassifyInput {
   index: number;
@@ -160,7 +205,7 @@ export async function classifyBatch(
   jobs: ClassifyInput[],
   userProfile: string,
 ): Promise<Set<number>> {
-  if (!groq || isQuotaCoolingDown()) return new Set(jobs.map((j) => j.index));
+  if (!groq && !hasCerebras) return new Set(jobs.map((j) => j.index));
 
   const relevant = new Set<number>();
   for (let i = 0; i < jobs.length; i += CLASSIFY_BATCH_SIZE) {
@@ -176,7 +221,7 @@ Which of these jobs are potentially relevant? Return JSON: {"relevant": [1, 3, 5
 ${list}`;
 
     try {
-      const raw = await callGroq("llama-3.1-8b-instant", prompt, "", lightThrottle);
+      const raw = await callLLM("light", prompt, "", lightThrottle);
       if (raw) {
         const parsed = JSON.parse(raw);
         const nums = Array.isArray(parsed.relevant) ? parsed.relevant : [];
@@ -197,10 +242,8 @@ ${list}`;
   return relevant;
 }
 
-
 function isParseAvailable(): boolean {
-  if (!groq) return false;
-  if (isQuotaCoolingDown()) return false;
+  if (!groq && !hasCerebras) return false;
 
   const now = Date.now();
   while (parseTimestamps.length > 0 && (parseTimestamps[0] ?? 0) < now - 3_600_000) {
@@ -236,7 +279,7 @@ export async function parseJobDescription(
   const truncated = text.length > MAX_INPUT_CHARS ? text.substring(0, MAX_INPUT_CHARS) + "..." : text;
 
   try {
-    const raw = await callGroq("llama-3.3-70b-versatile", PARSE_PROMPT, truncated, heavyThrottle);
+    const raw = await callLLM("heavy", PARSE_PROMPT, truncated, heavyThrottle);
     const parsed = parseLLMOutput(raw);
 
     if (hasContent(parsed)) {

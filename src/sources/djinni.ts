@@ -22,7 +22,7 @@ export async function fetchDjinni(): Promise<Job[]> {
 }
 
 const NOT_COMPANY =
-  /^(about|project|role|position|responsibilities|requirements|overview|customer$|gambling|the\s|we\s|our\s|your\s|join\s|що|як|ми|про|вимоги|обов|опис)/i;
+  /^(about|project|role|position|responsibilities|requirements|overview|customer$|gambling|the\s|we\s|our\s|your\s|join\s|що|як|ми|про|вимоги|обов|опис|необхідн|потрібн|завдання|умови)/i;
 
 const JOB_TITLE_WORDS =
   /\b(intern|developer|manager|engineer|designer|analyst|specialist|lead\b|senior|junior|middle|head of|recruiter|buyer|officer)\b/i;

@@ -36,14 +36,43 @@ const ROLE_PRESETS = [
 ];
 
 const WIZARD_TECH_PRESETS: Record<string, string[]> = {
-  frontend: ["react", "vue", "angular", "typescript", "next.js", "svelte"],
-  backend: ["node.js", "python", "go", "java", "rust", "ruby", "php"],
-  devops: ["kubernetes", "terraform", "aws", "docker", "ci/cd", "linux"],
-  mobile: ["react native", "flutter", "swift", "kotlin"],
-  "data & ml": ["python", "tensorflow", "pytorch", "sql", "spark"],
-  design: ["figma", "sketch", "adobe xd"],
-  product: ["jira", "analytics", "a/b testing"],
-  qa: ["selenium", "cypress", "jest", "playwright"],
+  frontend: [
+    "react", "vue", "angular", "typescript", "next.js", "svelte",
+    "javascript", "tailwind", "redux", "graphql",
+    "html", "css", "sass", "webpack", "vite",
+  ],
+  backend: [
+    "node.js", "python", "go", "java", "rust", "ruby", "php",
+    "postgresql", "mongodb", "redis", "elasticsearch",
+    "django", "fastapi", "express", "spring", "laravel",
+    "docker", "nginx", "rabbitmq", "kafka",
+  ],
+  devops: [
+    "kubernetes", "terraform", "aws", "docker", "ci/cd", "linux",
+    "ansible", "gcp", "azure", "nginx",
+    "prometheus", "grafana", "jenkins", "helm",
+  ],
+  mobile: [
+    "react native", "flutter", "swift", "kotlin",
+    "typescript", "expo", "firebase",
+  ],
+  "data & ml": [
+    "python", "tensorflow", "pytorch", "sql", "spark",
+    "pandas", "scikit-learn", "jupyter", "postgresql",
+    "airflow", "kafka", "docker",
+  ],
+  design: [
+    "figma", "sketch", "adobe xd",
+    "storybook", "css", "tailwind",
+  ],
+  product: [
+    "jira", "analytics", "a/b testing",
+    "sql", "amplitude", "mixpanel",
+  ],
+  qa: [
+    "selenium", "cypress", "jest", "playwright",
+    "pytest", "docker", "postman",
+  ],
 };
 
 function getTechPresets(roles: Set<string>): string[] {

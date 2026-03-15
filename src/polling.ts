@@ -18,7 +18,7 @@ import {
 } from "./db";
 import { log, debug, logError } from "./logger";
 import { Job, ParsedJob, jobKey } from "./types";
-import { parseJobDescription, classifyBatch } from "./llm";
+import { parseJobDescription, classifyBatch, PARSES_PER_HOUR } from "./llm";
 import { fetchDjinniEnrichment } from "./sources/djinni";
 import { resolveCompanyUrls } from "./company";
 import { normalizeForDedup } from "./utils";
@@ -270,15 +270,18 @@ async function processForUser(
   const parsedMap = await parseJobs(newJobs, settings, parseBudget);
 
   const { relevant, irrelevant, signalsMap } = classifyByRelevance(newJobs, parsedMap, settings);
+
+  // Jobs rejected without LLM data are deferred — not marked seen so they
+  // can be re-evaluated on the next cycle when parsing capacity is available.
+  const parsedIrrelevant = irrelevant.filter((nj) => parsedMap.get(nj.key) !== null);
+  const deferred = irrelevant.length - parsedIrrelevant.length;
+
   if (irrelevant.length > 0) {
-    log(`[${chatId}] Filtered out ${irrelevant.length} irrelevant jobs via AI`);
+    log(`[${chatId}] Filtered out ${irrelevant.length} irrelevant jobs via AI${deferred > 0 ? ` (${deferred} deferred)` : ""}`);
   }
 
   if (relevant.length === 0) {
-    markSeenBatch(
-      chatId,
-      irrelevant.map((nj) => nj.key),
-    );
+    markSeenBatch(chatId, parsedIrrelevant.map((nj) => nj.key));
     log(`[${chatId}] No relevant jobs (${newJobs.length} filtered out).`);
     return;
   }
@@ -294,20 +297,11 @@ async function processForUser(
   );
 
   if (skipped.length > 0) {
-    markSeenBatch(
-      chatId,
-      skipped.map((nj) => nj.key),
-    );
+    markSeenBatch(chatId, skipped.map((nj) => nj.key));
   }
   if (delivered.length > 0) {
-    markSeenBatch(
-      chatId,
-      delivered.map((nj) => nj.key),
-    );
-    markSeenBatch(
-      chatId,
-      irrelevant.map((nj) => nj.key),
-    );
+    markSeenBatch(chatId, delivered.map((nj) => nj.key));
+    markSeenBatch(chatId, parsedIrrelevant.map((nj) => nj.key));
     const preFilteredJobs = allNew.filter((_, i) => !relevantIndices.has(i));
     markSeenBatch(chatId, preFilteredJobs.map((nj) => nj.key));
     for (const nj of [...delivered, ...irrelevant, ...skipped, ...preFilteredJobs]) {
@@ -339,7 +333,7 @@ export async function pollAllUsers(): Promise<void> {
     const now = Date.now();
     const due = active.filter((s) => {
       const last = lastPolledAt.get(s.chatId) ?? 0;
-      return now - last >= s.checkIntervalMinutes * 60_000;
+      return now - last >= s.checkIntervalMinutes * 60_000 - 30_000;
     });
 
     if (due.length === 0) return;
@@ -352,11 +346,12 @@ export async function pollAllUsers(): Promise<void> {
     const jobsBySource = await fetchAllSources();
     log(`Polling for ${due.length} of ${active.length} user(s)...`);
 
-    const parseBudget = Math.max(10, Math.floor(40 / due.length));
+    const afterFetch = Date.now();
+    const parseBudget = Math.max(10, Math.floor(PARSES_PER_HOUR / due.length));
     for (const settings of due) {
       try {
         await processForUser(settings, jobsBySource, parseBudget);
-        lastPolledAt.set(settings.chatId, now);
+        lastPolledAt.set(settings.chatId, afterFetch);
       } catch (error) {
         logError(`Poll [${settings.chatId}]`, error);
       }

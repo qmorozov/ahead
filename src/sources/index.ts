@@ -12,6 +12,7 @@ import { fetchTheMuse } from "./themuse";
 import { fetchWorkingNomads } from "./workingnomads";
 import { fetchRemoteFirstJobs } from "./remotefirstjobs";
 import { fetchHN } from "./hn";
+import { fetchAdzuna } from "./adzuna";
 
 interface Source {
   name: string;
@@ -30,6 +31,7 @@ export const sources: Source[] = [
   { name: "WorkingNomads", fetch: fetchWorkingNomads },
   { name: "RemoteFirstJobs", fetch: fetchRemoteFirstJobs },
   { name: "HN", fetch: fetchHN },
+  { name: "Adzuna", fetch: fetchAdzuna },
 ];
 
 const disabledUntil = new Map<string, number>();
