@@ -1,7 +1,6 @@
-import axios from "axios";
+import pRetry from "p-retry";
 import { Job } from "../types";
 import { log, logError } from "../logger";
-import { sleep } from "../utils";
 import { fetchRemoteOK } from "./remoteok";
 import { fetchRemotive } from "./remotive";
 import { fetchJobicy } from "./jobicy";
@@ -13,8 +12,6 @@ import { fetchTheMuse } from "./themuse";
 import { fetchWorkingNomads } from "./workingnomads";
 import { fetchRemoteFirstJobs } from "./remotefirstjobs";
 import { fetchHN } from "./hn";
-
-axios.defaults.timeout = 15_000;
 
 interface Source {
   name: string;
@@ -51,25 +48,20 @@ function isSourceDisabled(name: string): boolean {
 export async function fetchWithRetry(source: Source): Promise<Job[]> {
   if (isSourceDisabled(source.name)) return [];
 
-  const maxRetries = 3;
-  const baseDelay = 2000;
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const jobs = await source.fetch();
-      disabledUntil.delete(source.name);
-      return jobs;
-    } catch (error) {
-      if (attempt === maxRetries) {
-        logError(source.name, error);
-        disabledUntil.set(source.name, Date.now() + DISABLE_FOR_MS);
-        log(`${source.name} disabled for 15min`);
-        return [];
-      }
-      const delay = baseDelay * Math.pow(2, attempt - 1);
-      await sleep(delay);
-    }
+  try {
+    const jobs = await pRetry(() => source.fetch(), {
+      retries: 3,
+      minTimeout: 2000,
+      onFailedAttempt: (error) => {
+        log(`${source.name} attempt ${error.attemptNumber}/3 failed (${error.retriesLeft} left)`);
+      },
+    });
+    disabledUntil.delete(source.name);
+    return jobs;
+  } catch (error) {
+    logError(source.name, error);
+    disabledUntil.set(source.name, Date.now() + DISABLE_FOR_MS);
+    log(`${source.name} disabled for 15min`);
+    return [];
   }
-
-  return [];
 }

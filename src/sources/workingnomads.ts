@@ -1,5 +1,6 @@
 import axios from "axios";
 import { z } from "zod";
+import { HTTP_TIMEOUT } from "../config";
 import { Job } from "../types";
 
 const JobSchema = z.object({
@@ -16,7 +17,9 @@ const JobSchema = z.object({
 const ResponseSchema = z.array(JobSchema).default([]);
 
 export async function fetchWorkingNomads(): Promise<Job[]> {
-  const { data } = await axios.get("https://www.workingnomads.com/api/exposed_jobs/");
+  const { data } = await axios.get("https://www.workingnomads.com/api/exposed_jobs/", {
+    timeout: HTTP_TIMEOUT,
+  });
   const jobs = ResponseSchema.parse(data);
 
   return jobs.map((j) => {
@@ -28,7 +31,6 @@ export async function fetchWorkingNomads(): Promise<Job[]> {
     if (j.category_name && !lowerTags.has(j.category_name.toLowerCase())) {
       tags.unshift(j.category_name);
     }
-
     return {
       id: j.url.match(/\/(\d+)\/?$/)?.[1] ?? j.url,
       title: j.title,

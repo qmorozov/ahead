@@ -1,18 +1,14 @@
 import cron, { ScheduledTask } from "node-cron";
 import { bot } from "./bot";
 import { isOnboarded, loadSettings, loadAllSettings, closeDb } from "./db";
-import { registerCommands, setOnUserStarted, setOnSettingsChanged } from "./commands";
+import { handlers, setOnWizardComplete, setOnIntervalChanged } from "./handlers";
 import { log, logError } from "./logger";
 import { pollAllUsers, pollSingleUser } from "./polling";
-import { migrateFromJson } from "./migrate";
-import { restoreWizardSessions } from "./wizard";
 
 let cronTask: ScheduledTask | null = null;
 
 function startCron(): void {
-  if (cronTask) {
-    cronTask.stop();
-  }
+  if (cronTask) cronTask.stop();
 
   const allSettings = loadAllSettings().filter((s) => isOnboarded(s));
   const interval =
@@ -27,17 +23,13 @@ function startCron(): void {
   log(`Cron tick: every ${interval}min (per-user intervals apply).`);
 }
 
-bot.on("polling_error", (error) => {
-  logError("Telegram polling", error);
+bot.catch((err) => {
+  logError("Telegram", err.error);
 });
 
-migrateFromJson();
-restoreWizardSessions();
-registerCommands();
+bot.use(handlers);
 
-setOnSettingsChanged(() => startCron());
-
-setOnUserStarted((chatId: string) => {
+setOnWizardComplete((chatId) => {
   const settings = loadSettings(chatId);
   if (settings) {
     pollSingleUser(settings)
@@ -46,10 +38,17 @@ setOnUserStarted((chatId: string) => {
   }
 });
 
-const existing = loadAllSettings().filter((s) => isOnboarded(s));
-if (existing.length > 0) {
-  log(`${existing.length} user(s) found. Starting polling...`);
-  pollAllUsers().then(() => startCron());
+setOnIntervalChanged(() => startCron());
+
+bot.api.deleteMyCommands().catch(() => {});
+bot.start({ onStart: () => log("Bot started polling.") });
+
+const onboarded = loadAllSettings().filter((s) => isOnboarded(s));
+if (onboarded.length > 0) {
+  log(`${onboarded.length} user(s) found. Starting polling...`);
+  pollAllUsers()
+    .catch((error) => logError("Initial poll", error))
+    .then(() => startCron());
 } else {
   log("No users yet. Waiting for /start in Telegram...");
 }
@@ -62,7 +61,7 @@ function shutdown(signal: string): void {
   log(`${signal} received. Shutting down...`);
 
   if (cronTask) cronTask.stop();
-  bot.stopPolling();
+  bot.stop();
   closeDb();
 
   log("Shutdown complete.");

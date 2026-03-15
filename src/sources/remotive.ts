@@ -1,5 +1,6 @@
 import axios from "axios";
 import { z } from "zod";
+import { HTTP_TIMEOUT } from "../config";
 import { Job } from "../types";
 
 const JobSchema = z.object({
@@ -19,7 +20,7 @@ const ResponseSchema = z.object({
 });
 
 export async function fetchRemotive(): Promise<Job[]> {
-  const { data } = await axios.get("https://remotive.com/api/remote-jobs");
+  const { data } = await axios.get("https://remotive.com/api/remote-jobs", { timeout: HTTP_TIMEOUT });
   const { jobs } = ResponseSchema.parse(data);
 
   return jobs.map((j) => ({

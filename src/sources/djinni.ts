@@ -1,4 +1,5 @@
 import axios from "axios";
+import { HTTP_TIMEOUT } from "../config";
 import { rssParser } from "../utils";
 import { Job } from "../types";
 
@@ -72,23 +73,17 @@ function parseJsonLd(html: string): EnrichmentData {
   }
 }
 
-export async function enrichJob(job: Job): Promise<void> {
-  if (job.company && job.location) return;
-
-  const cached = enrichCache.get(job.url);
-  if (cached) {
-    if (!job.company) job.company = cached.company;
-    if (!job.location) job.location = cached.location;
-    return;
-  }
+export async function fetchDjinniEnrichment(url: string): Promise<EnrichmentData> {
+  const cached = enrichCache.get(url);
+  if (cached) return cached;
 
   try {
-    const { data } = await axios.get(job.url, { timeout: 10_000 });
-    const enriched = parseJsonLd(data as string);
-    setCache(job.url, enriched);
-    if (!job.company) job.company = enriched.company;
-    if (!job.location) job.location = enriched.location;
+    const { data } = await axios.get(url, { timeout: HTTP_TIMEOUT });
+    const enriched = parseJsonLd(typeof data === "string" ? data : "");
+    setCache(url, enriched);
+    return enriched;
   } catch {
-    setCache(job.url, { company: "", location: "" });
+    setCache(url, { company: "", location: "" });
+    return { company: "", location: "" };
   }
 }

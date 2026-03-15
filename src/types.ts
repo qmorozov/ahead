@@ -8,6 +8,7 @@ export interface Job {
   salary?: string;
   description?: string;
   seniority?: string;
+  salaryMinUsd?: number;
   url: string;
   source: string;
   companyUrl?: string;
@@ -25,3 +26,7 @@ export const ParsedJobSchema = z.object({
 });
 
 export type ParsedJob = z.infer<typeof ParsedJobSchema>;
+
+export function jobKey(job: Job): string {
+  return `${job.source.toLowerCase()}::${job.id}`;
+}

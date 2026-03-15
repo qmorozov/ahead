@@ -1,8 +1,10 @@
+import pThrottle from "p-throttle";
+import pRetry, { AbortError } from "p-retry";
 import Groq from "groq-sdk";
 import { config } from "./config";
 import { getCachedParse, setCachedParse, getLlmQuotaValue, setLlmQuotaValue } from "./db";
 import { hasContent } from "./format";
-import { log, logError } from "./logger";
+import { log, debug, logError } from "./logger";
 import { ParsedJob, ParsedJobSchema } from "./types";
 import { stripHtml } from "./utils";
 
@@ -17,7 +19,7 @@ function emptyParsed(): ParsedJob {
   };
 }
 
-const PROMPT = `Extract structured data from this job posting.
+const PARSE_PROMPT = `Extract structured data from this job posting.
 Return JSON with these fields:
 - requirements: key requirements (max 8, concise, 1 line each)
 - niceToHave: nice-to-have skills (max 5)
@@ -29,17 +31,23 @@ Return JSON with these fields:
 Rules:
 - Skip generic filler ("team player", "good communication")
 - Skip company descriptions and application instructions
+- primaryTags MUST only include technologies, tools, or frameworks explicitly mentioned in the job posting text. Do NOT infer or add technologies not mentioned.
 - primaryTags should be mostly specific technologies, but include 1-2 role categories if clearly applicable (e.g., "devops", "frontend", "mobile")
 - Always return at least 3 primaryTags
-- If a section is not found, return empty array`;
+- If a section is not found, return empty array
+
+Example input: "We're looking for a Senior React developer with TypeScript experience. Must know PostgreSQL and Redis. Nice to have: Docker, AWS."
+Example output: {"requirements":["React expertise","TypeScript proficiency","PostgreSQL","Redis"],"niceToHave":["Docker","AWS"],"responsibilities":[],"seniority":"Senior","salary":null,"primaryTags":["react","typescript","postgresql","redis","docker","aws"]}`;
 
 const groq = config.groqApiKey ? new Groq({ apiKey: config.groqApiKey }) : null;
 
-const RPM_LIMIT = 6;
-const PARSES_PER_HOUR = 20;
+const PARSES_PER_HOUR = 40;
 const QUOTA_COOLDOWN_MS = 60 * 60 * 1000;
+const MAX_INPUT_CHARS = 1000;
+const CLASSIFY_BATCH_SIZE = 10;
 
-const requestTimestamps: number[] = [];
+const heavyThrottle = pThrottle({ limit: 6, interval: 60_000 });
+const lightThrottle = pThrottle({ limit: 20, interval: 60_000 });
 
 const parseTimestamps: number[] = (() => {
   const raw = getLlmQuotaValue("parse_timestamps");
@@ -55,93 +63,147 @@ const parseTimestamps: number[] = (() => {
 
 let quotaExhaustedAt = parseInt(getLlmQuotaValue("quota_exhausted_at") ?? "", 10) || 0;
 
-async function waitForRateLimit(): Promise<void> {
-  while (true) {
-    const now = Date.now();
-    while (requestTimestamps.length > 0 && requestTimestamps[0]! < now - 60_000) {
-      requestTimestamps.shift();
-    }
-    if (requestTimestamps.length < RPM_LIMIT) break;
-    const waitMs = Math.max(100, requestTimestamps[0]! + 60_000 - Date.now() + 100);
-    log(`Rate limit: waiting ${Math.ceil(waitMs / 1000)}s`);
-    await new Promise((resolve) => setTimeout(resolve, waitMs));
+function parseLLMOutput(raw: string | null | undefined): ParsedJob {
+  if (!raw) return emptyParsed();
+
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return emptyParsed();
   }
-  requestTimestamps.push(Date.now());
+
+  const result = ParsedJobSchema.safeParse(json);
+  if (!result.success) return emptyParsed();
+
+  return {
+    ...result.data,
+    requirements: result.data.requirements.slice(0, 8),
+    niceToHave: result.data.niceToHave.slice(0, 5),
+    responsibilities: result.data.responsibilities.slice(0, 5),
+    primaryTags: result.data.primaryTags.slice(0, 8).map((t) => t.toLowerCase()),
+  };
 }
 
-const MAX_INPUT_CHARS = 2000;
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null) return JSON.stringify(error);
+  return String(error);
+}
 
-async function callLLM(description: string): Promise<ParsedJob> {
-  if (!groq) return emptyParsed();
+function isRetryableError(error: unknown): boolean {
+  const msg = errorMessage(error);
+  return /429|rate/i.test(msg) || /5\d\d/.test(msg) || /ECONNRESET|ETIMEDOUT|fetch failed/i.test(msg);
+}
 
-  const text = stripHtml(description);
-  const truncated =
-    text.length > MAX_INPUT_CHARS ? text.substring(0, MAX_INPUT_CHARS) + "..." : text;
-  const maxRetries = 3;
+function isQuotaError(error: unknown): boolean {
+  const msg = errorMessage(error);
+  return /tokens per day|tokens per hour/i.test(msg);
+}
 
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
+function handleQuotaError(): void {
+  quotaExhaustedAt = Date.now();
+  setLlmQuotaValue("quota_exhausted_at", String(quotaExhaustedAt));
+  log("LLM quota exhausted, pausing for 1h");
+}
+
+function isQuotaCoolingDown(): boolean {
+  return quotaExhaustedAt > 0 && Date.now() - quotaExhaustedAt < QUOTA_COOLDOWN_MS;
+}
+
+async function callGroq(
+  model: string,
+  systemPrompt: string,
+  userContent: string,
+  throttleFn: ReturnType<typeof pThrottle>,
+): Promise<string | null> {
+  if (!groq) return null;
+
+  const throttled = throttleFn(async () => {
+    const response = await groq.chat.completions.create({
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userContent },
+      ],
+      response_format: { type: "json_object" },
+      temperature: 0,
+    });
+    return response.choices[0]?.message?.content ?? null;
+  });
+
+  return pRetry(() => throttled(), {
+    retries: 2,
+    minTimeout: 2000,
+    onFailedAttempt: (error) => {
+      if (isQuotaError(error)) {
+        handleQuotaError();
+        throw new AbortError("Quota exhausted");
+      }
+      if (!isRetryableError(error)) {
+        throw new AbortError(`Non-retryable: ${errorMessage(error)}`);
+      }
+      log(`LLM retry ${error.attemptNumber}/2 (${error.retriesLeft} left)`);
+    },
+  });
+}
+
+
+interface ClassifyInput {
+  index: number;
+  title: string;
+  company: string;
+  tags: string[];
+}
+
+export async function classifyBatch(
+  jobs: ClassifyInput[],
+  userProfile: string,
+): Promise<Set<number>> {
+  if (!groq || isQuotaCoolingDown()) return new Set(jobs.map((j) => j.index));
+
+  const relevant = new Set<number>();
+  for (let i = 0; i < jobs.length; i += CLASSIFY_BATCH_SIZE) {
+    const batch = jobs.slice(i, i + CLASSIFY_BATCH_SIZE);
+    const list = batch
+      .map((j, idx) => `${idx + 1}. ${j.title} — ${j.company} [${j.tags.slice(0, 4).join(", ")}]`)
+      .join("\n");
+
+    const prompt = `Given this user profile: ${userProfile}
+
+Which of these jobs are potentially relevant? Return JSON: {"relevant": [1, 3, 5]} with the numbers of relevant jobs. If unsure, include the job. Be generous — it's better to include a borderline job than miss a good one.
+
+${list}`;
+
     try {
-      await waitForRateLimit();
-
-      const response = await groq.chat.completions.create({
-        model: "llama-3.3-70b-versatile",
-        messages: [
-          { role: "system", content: PROMPT },
-          { role: "user", content: truncated },
-        ],
-        response_format: { type: "json_object" },
-        temperature: 0,
-      });
-
-      const raw = response.choices[0]?.message?.content ?? "";
-      const result = ParsedJobSchema.safeParse(JSON.parse(raw));
-      if (!result.success) {
-        log("LLM returned invalid structure, using empty result");
-        return emptyParsed();
+      const raw = await callGroq("llama-3.1-8b-instant", prompt, "", lightThrottle);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const nums = Array.isArray(parsed.relevant) ? parsed.relevant : [];
+        for (const n of nums) {
+          const job = batch[n - 1];
+          if (job) relevant.add(job.index);
+        }
+        debug(`Classify batch: ${batch.length} jobs → ${nums.length} relevant`);
+      } else {
+        for (const j of batch) relevant.add(j.index);
       }
-
-      return {
-        ...result.data,
-        requirements: result.data.requirements.slice(0, 8),
-        niceToHave: result.data.niceToHave.slice(0, 5),
-        responsibilities: result.data.responsibilities.slice(0, 5),
-        primaryTags: result.data.primaryTags.slice(0, 8).map((t) => t.toLowerCase()),
-      };
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : "";
-
-      if (/tokens per day|tokens per hour/i.test(msg)) {
-        log("LLM quota exhausted, pausing for 1h");
-        quotaExhaustedAt = Date.now();
-        setLlmQuotaValue("quota_exhausted_at", String(quotaExhaustedAt));
-        return emptyParsed();
-      }
-
-      const isRetryable =
-        /429|rate/i.test(msg) ||
-        /5\d\d/.test(msg) ||
-        /ECONNRESET|ETIMEDOUT|fetch failed/i.test(msg);
-
-      if (isRetryable && attempt < maxRetries - 1) {
-        const delay = Math.pow(2, attempt + 1) * 1000;
-        log(`LLM retry ${attempt + 1}/${maxRetries} in ${delay}ms`);
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        continue;
-      }
-      logError("LLM", error);
-      return emptyParsed();
+    } catch (error) {
+      logError("LLM classify", error);
+      for (const j of batch) relevant.add(j.index);
     }
   }
 
-  return emptyParsed();
+  return relevant;
 }
 
-function isAvailable(): boolean {
+
+function isParseAvailable(): boolean {
   if (!groq) return false;
-  if (quotaExhaustedAt > 0 && Date.now() - quotaExhaustedAt < QUOTA_COOLDOWN_MS) return false;
+  if (isQuotaCoolingDown()) return false;
 
   const now = Date.now();
-  while (parseTimestamps.length > 0 && parseTimestamps[0]! < now - 3_600_000) {
+  while (parseTimestamps.length > 0 && (parseTimestamps[0] ?? 0) < now - 3_600_000) {
     parseTimestamps.shift();
   }
   return parseTimestamps.length < PARSES_PER_HOUR;
@@ -152,18 +214,43 @@ export async function parseJobDescription(
   description: string,
 ): Promise<ParsedJob | null> {
   const cached = getCachedParse(jobKey);
-  if (cached) return cached;
+  if (cached) {
+    debug(`LLM cache hit [${jobKey}]: ${cached.primaryTags.join(", ")}`);
+    return cached;
+  }
 
-  if (!isAvailable()) return null;
-  if (!description || description.trim().length < 50) return null;
+  if (!isParseAvailable()) {
+    debug(`LLM skip [${jobKey}]: quota ${parseTimestamps.length}/${PARSES_PER_HOUR}`);
+    return null;
+  }
+  if (!description || description.trim().length < 50) {
+    debug(`LLM skip [${jobKey}]: description too short`);
+    return null;
+  }
 
   parseTimestamps.push(Date.now());
   setLlmQuotaValue("parse_timestamps", JSON.stringify(parseTimestamps));
-  const parsed = await callLLM(description);
+  log(`LLM parsing [${jobKey}] (${parseTimestamps.length}/${PARSES_PER_HOUR})`);
 
-  if (hasContent(parsed)) {
-    setCachedParse(jobKey, parsed);
+  const text = stripHtml(description);
+  const truncated = text.length > MAX_INPUT_CHARS ? text.substring(0, MAX_INPUT_CHARS) + "..." : text;
+
+  try {
+    const raw = await callGroq("llama-3.3-70b-versatile", PARSE_PROMPT, truncated, heavyThrottle);
+    const parsed = parseLLMOutput(raw);
+
+    if (hasContent(parsed)) {
+      setCachedParse(jobKey, parsed);
+      log(`LLM parsed [${jobKey}]: ${parsed.primaryTags.join(", ")}`);
+    } else {
+      log(`LLM empty result [${jobKey}]`);
+    }
+
+    return parsed;
+  } catch (error) {
+    if (!(error instanceof AbortError && error.message === "Quota exhausted")) {
+      logError("LLM", error);
+    }
+    return null;
   }
-
-  return parsed;
 }

@@ -1,5 +1,34 @@
 import { Job, ParsedJob } from "./types";
+import { UserSettings } from "./db";
 import { stripHtml, detectSeniority } from "./utils";
+
+export function formatSalaryRange(
+  min?: number | null,
+  max?: number | null,
+  currency = "USD",
+): string | undefined {
+  if (!min || !max) return undefined;
+  return `${currency} ${min.toLocaleString()} – ${max.toLocaleString()}`;
+}
+
+export function formatSettings(settings: UserSettings): string {
+  const fmt = (arr: string[], fallback: string) => (arr.length > 0 ? arr.join(", ") : fallback);
+
+  const salary = settings.minSalaryUsd > 0 ? `$${settings.minSalaryUsd / 1000}k+` : "any";
+
+  return [
+    `Status \u00b7 ${settings.paused ? "paused" : "active"}`,
+    `Roles \u00b7 ${fmt(settings.roles, "\u2014")}`,
+    `Technologies \u00b7 ${fmt(settings.keywords, "\u2014")}`,
+    `Exclude \u00b7 ${fmt(settings.excludeKeywords, "\u2014")}`,
+    `Locations \u00b7 ${fmt(settings.locations, "any")}`,
+    `Seniority \u00b7 ${fmt(settings.seniority, "any")}`,
+    `Min salary \u00b7 ${salary}`,
+    `Interval \u00b7 ${settings.checkIntervalMinutes}min`,
+    `Max age \u00b7 ${settings.maxJobAgeDays > 0 ? `${settings.maxJobAgeDays}d` : "off"}`,
+    `Jobs sent \u00b7 ${settings.jobsSent}`,
+  ].join("\n");
+}
 
 function escapeHtml(text: string): string {
   return text
@@ -15,6 +44,7 @@ function timeAgo(dateStr: string): string {
   if (isNaN(posted)) return "";
 
   const diffMs = now - posted;
+  if (diffMs < 0) return "just now";
   const minutes = Math.floor(diffMs / 60000);
   const hours = Math.floor(diffMs / 3600000);
   const days = Math.floor(diffMs / 86400000);
@@ -50,7 +80,7 @@ function techTags(job: Job, parsed: ParsedJob | null, limit: number): string[] {
   );
 }
 
-export function formatDigestItem(index: number, job: Job, parsed: ParsedJob | null): string {
+export function formatDigestItem(index: number, job: Job, parsed: ParsedJob | null, signals?: string[]): string {
   const title = `<b>${index}.</b> <a href="${escapeHtml(job.url)}">${escapeHtml(job.title)}</a> — ${companyHtml(job)}`;
 
   const tags = techTags(job, parsed, 4);
@@ -60,9 +90,10 @@ export function formatDigestItem(index: number, job: Job, parsed: ParsedJob | nu
   if (tags.length > 0) metaParts.push(tags.join(", "));
   if (salary) metaParts.push(salary);
 
-  const meta = metaParts.length > 0 ? `\n    ${escapeHtml(metaParts.join(" · "))}` : "";
+  const meta = metaParts.length > 0 ? `\n    ${escapeHtml(metaParts.join(" \u00b7 "))}` : "";
+  const why = signals && signals.length > 0 ? `\n    \u2713 ${escapeHtml(signals.join(" \u00b7 "))}` : "";
 
-  return title + meta;
+  return title + meta + why;
 }
 
 export function formatDigest(items: string[], total: number): string {
@@ -123,8 +154,7 @@ export function formatMessage(job: Job, parsed: ParsedJob | null): string {
   const headerText = lines.filter(Boolean).join("\n");
   const footer = ago ? `\n\n⚡ Posted ${ago}` : "";
 
-  const separators = 6; // "\n\n" between header, description, footer
-  const descBudget = MAX_MESSAGE_LENGTH - headerText.length - footer.length - separators;
+  const descBudget = MAX_MESSAGE_LENGTH - headerText.length - footer.length - "\n\n".length;
 
   let description = "";
   if (descBudget > 200) {
@@ -137,5 +167,9 @@ export function formatMessage(job: Job, parsed: ParsedJob | null): string {
     }
   }
 
-  return headerText + description + footer;
+  const message = headerText + description + footer;
+  if (message.length > MAX_MESSAGE_LENGTH) {
+    return (headerText + footer).slice(0, MAX_MESSAGE_LENGTH);
+  }
+  return message;
 }

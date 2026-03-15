@@ -3,33 +3,6 @@ import { Job } from "../types";
 
 const FEED_URL = "https://hnrss.org/whoishiring/jobs?count=100";
 
-export async function fetchHN(): Promise<Job[]> {
-  const feed = await rssParser.parseURL(FEED_URL);
-  const jobs: Job[] = [];
-
-  for (const item of feed.items) {
-    const text = item.contentSnippet ?? item.content ?? "";
-    if (text.length < 20) continue;
-
-    const parsed = parsePosting(text);
-    if (!parsed.company) continue;
-
-    jobs.push({
-      id: item.guid ?? item.link ?? "",
-      title: parsed.title || "",
-      company: parsed.company,
-      location: parsed.location || "Remote",
-      description: item.content,
-      url: item.link ?? "",
-      source: "HN",
-      tags: parsed.tags,
-      publishedAt: item.isoDate ?? new Date().toISOString(),
-    });
-  }
-
-  return jobs;
-}
-
 interface ParsedPosting {
   company: string;
   title: string;
@@ -87,4 +60,31 @@ function isTech(s: string): boolean {
   return /\b(react|node|python|java|go|rust|typescript|ruby|rails|aws|gcp|azure|kubernetes|docker|postgres|graphql|vue|angular|swift|kotlin)\b/i.test(
     s,
   );
+}
+
+export async function fetchHN(): Promise<Job[]> {
+  const feed = await rssParser.parseURL(FEED_URL);
+  const jobs: Job[] = [];
+
+  for (const item of feed.items) {
+    const text = item.contentSnippet ?? item.content ?? "";
+    if (text.length < 20) continue;
+
+    const parsed = parsePosting(text);
+    if (!parsed.company) continue;
+
+    jobs.push({
+      id: item.guid ?? item.link ?? "",
+      title: parsed.title || "",
+      company: parsed.company,
+      location: parsed.location || "Remote",
+      description: item.content,
+      url: item.link ?? "",
+      source: "HN",
+      tags: parsed.tags,
+      publishedAt: item.isoDate ?? new Date().toISOString(),
+    });
+  }
+
+  return jobs;
 }

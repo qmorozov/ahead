@@ -1,7 +1,8 @@
 import axios from "axios";
 import { z } from "zod";
+import { HTTP_TIMEOUT } from "../config";
 import { Job } from "../types";
-import { formatSalaryRange } from "../utils";
+import { formatSalaryRange } from "../format";
 
 const JobSchema = z.object({
   guid: z.string().default(""),
@@ -28,25 +29,21 @@ const ResponseSchema = z.object({
 });
 
 export async function fetchHimalayas(): Promise<Job[]> {
-  const { data } = await axios.get("https://himalayas.app/jobs/api");
+  const { data } = await axios.get("https://himalayas.app/jobs/api", { timeout: HTTP_TIMEOUT });
   const { jobs } = ResponseSchema.parse(data);
 
-  return jobs.map((j) => {
-    const location =
-      j.locationRestrictions.length > 0 ? j.locationRestrictions.join(", ") : "Remote";
-
-    return {
-      id: j.guid,
-      title: j.title,
-      company: j.companyName,
-      location,
-      salary: formatSalaryRange(j.minSalary, j.maxSalary, j.currency),
-      description: j.description,
-      seniority: j.seniority[0] || undefined,
-      url: j.applicationLink,
-      source: "Himalayas",
-      tags: j.categories,
-      publishedAt: j.pubDate,
-    };
-  });
+  return jobs.map((j) => ({
+    id: j.guid,
+    title: j.title,
+    company: j.companyName,
+    location: j.locationRestrictions.length > 0 ? j.locationRestrictions.join(", ") : "Remote",
+    salary: formatSalaryRange(j.minSalary, j.maxSalary, j.currency),
+    salaryMinUsd: j.currency?.toUpperCase() === "USD" ? (j.minSalary ?? undefined) : undefined,
+    description: j.description,
+    seniority: j.seniority[0] || undefined,
+    url: j.applicationLink,
+    source: "Himalayas",
+    tags: j.categories,
+    publishedAt: j.pubDate,
+  }));
 }

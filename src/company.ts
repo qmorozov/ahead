@@ -1,4 +1,5 @@
 import axios from "axios";
+import { CLEARBIT_TIMEOUT } from "./config";
 import { getCachedCompanyUrl, setCachedCompanyUrl } from "./db";
 import { Job } from "./types";
 
@@ -8,10 +9,13 @@ async function lookupCompanyUrl(name: string): Promise<string | null> {
   try {
     const { data } = await axios.get(CLEARBIT_URL, {
       params: { query: name },
-      timeout: 5000,
+      timeout: CLEARBIT_TIMEOUT,
     });
-    if (Array.isArray(data) && data.length > 0 && data[0].domain) {
-      return `https://${data[0].domain}`;
+    if (Array.isArray(data) && data.length > 0) {
+      const domain = data[0]?.domain;
+      if (typeof domain === "string" && domain) {
+        return `https://${domain}`;
+      }
     }
     return null;
   } catch {
@@ -29,27 +33,25 @@ async function resolveCompanyUrl(name: string): Promise<string | null> {
   return url;
 }
 
-export async function enrichCompanyUrls(jobs: Job[]): Promise<void> {
-  const unique = new Map<string, string>();
+export async function resolveCompanyUrls(jobs: Job[]): Promise<Map<string, string>> {
+  const uniqueCompanies = new Map<string, string>();
   for (const job of jobs) {
     if (job.companyUrl || !job.company) continue;
     const key = job.company.toLowerCase().trim();
-    if (!unique.has(key)) unique.set(key, job.company);
+    if (!uniqueCompanies.has(key)) uniqueCompanies.set(key, job.company);
   }
 
-  const urls = new Map<string, string>();
-  const entries = [...unique.entries()];
+  const resolvedUrls = new Map<string, string>();
+  const entries = [...uniqueCompanies.entries()];
   for (let i = 0; i < entries.length; i += 5) {
     const batch = entries.slice(i, i + 5);
     const results = await Promise.all(batch.map(([, name]) => resolveCompanyUrl(name)));
-    batch.forEach(([key], j) => {
-      if (results[j]) urls.set(key, results[j]);
-    });
-  }
-
-  for (const job of jobs) {
-    if (!job.companyUrl && job.company) {
-      job.companyUrl = urls.get(job.company.toLowerCase().trim());
+    for (let j = 0; j < batch.length; j++) {
+      const url = results[j];
+      const entry = batch[j];
+      if (url && entry) resolvedUrls.set(entry[0], url);
     }
   }
+
+  return resolvedUrls;
 }
