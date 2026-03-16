@@ -45,7 +45,7 @@ const hasCerebras = !!config.cerebrasApiKey;
 
 export const PARSES_PER_HOUR = 40;
 const QUOTA_COOLDOWN_MS = 60 * 60 * 1000;
-const MAX_INPUT_CHARS = 1000;
+const MAX_INPUT_CHARS = 2000;
 const CLASSIFY_BATCH_SIZE = 10;
 
 const heavyThrottle = pThrottle({ limit: 6, interval: 60_000 });

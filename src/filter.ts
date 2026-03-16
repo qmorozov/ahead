@@ -272,7 +272,6 @@ function expandLocations(locations: string[]): string[] {
   return [...expanded];
 }
 
-// FIXME: doesn't handle "Remote (US/EU)" — need to split on "/" and check each region
 const REMOTE_QUALIFIER_RE =
   /remote\s*[(\-–,]\s*(.+?)\s*\)?$|remote\s+(?:only|based\s+in)\s+(.+)/i;
 
@@ -284,7 +283,8 @@ function passesLocationCheck(location: string, expandedLocations: string[]): boo
     const m = REMOTE_QUALIFIER_RE.exec(loc);
     const qualifier = (m?.[1] ?? m?.[2] ?? "").trim();
     if (!qualifier) return true;
-    return matchesAny(qualifier, expandedLocations);
+    const parts = qualifier.split(/[\/&,]/).map((p) => p.trim()).filter(Boolean);
+    return parts.some((p) => matchesAny(p, expandedLocations));
   }
 
   return matchesAny(location, expandedLocations);

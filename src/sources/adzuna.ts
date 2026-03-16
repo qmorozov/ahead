@@ -41,7 +41,7 @@ async function fetchCountry(country: string): Promise<Job[]> {
       app_id: config.adzunaAppId,
       app_key: config.adzunaAppKey,
       category: "it-jobs",
-      what_exclude: "manager director vice president sales representative customer service recruiter",
+      what_exclude: "manager director vice president sales representative customer service recruiter accountant accounts payable finance specialist",
       max_days_old: 3,
       results_per_page: 50,
       sort_by: "date",
