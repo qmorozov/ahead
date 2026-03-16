@@ -148,7 +148,13 @@ async function callProvider(
 const GROQ_MODELS = { light: "llama-3.1-8b-instant", heavy: "llama-3.3-70b-versatile" };
 const CEREBRAS_MODELS = { light: "llama3.1-8b", heavy: "qwen-3-235b-a22b-instruct-2507" };
 
+let lastCerebrasCall = 0;
+
 async function callCerebras(model: string, systemPrompt: string, userContent: string): Promise<string | null> {
+  const wait = 2000 - (Date.now() - lastCerebrasCall);
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  lastCerebrasCall = Date.now();
+
   const { data } = await axios.post("https://api.cerebras.ai/v1/chat/completions", {
     model,
     messages: [
@@ -159,7 +165,7 @@ async function callCerebras(model: string, systemPrompt: string, userContent: st
     temperature: 0,
   }, {
     headers: { Authorization: `Bearer ${config.cerebrasApiKey}` },
-    timeout: 30_000,
+    timeout: 60_000,
   });
   return data?.choices?.[0]?.message?.content ?? null;
 }
@@ -244,6 +250,7 @@ ${list}`;
 
 function isParseAvailable(): boolean {
   if (!groq && !hasCerebras) return false;
+  if (hasCerebras) return true;
 
   const now = Date.now();
   while (parseTimestamps.length > 0 && (parseTimestamps[0] ?? 0) < now - 3_600_000) {
