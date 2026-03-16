@@ -396,7 +396,7 @@ export function scoreJob(job: Job, parsed: ParsedJob | null, ctx: ScoringContext
       signals.push(`${matched.join(", ")} tags`);
     }
     const nonGenericMatched = matched.filter((tag) => !GENERIC_TOOLS.has(tag.toLowerCase()));
-    if (parsed.primaryTags.length >= 4 && nonGenericMatched.length / parsed.primaryTags.length <= 0.25) {
+    if (parsed.primaryTags.length >= 4 && nonGenericMatched.length < 2 && nonGenericMatched.length / parsed.primaryTags.length <= 0.25) {
       return { score: -1, signals: ["low tag overlap"] };
     }
   }
@@ -517,6 +517,8 @@ export function filterJobs(jobs: Job[], settings: UserSettings): Job[] {
       const max = sal?.max ?? job.salaryMinUsd;
       if (max !== undefined && max < settings.minSalaryUsd) return false;
     }
+
+    if (settings.jobTypes.length > 0 && job.jobType && !settings.jobTypes.includes(job.jobType)) return false;
 
     if (settings.maxJobAgeDays > 0 && job.publishedAt) {
       const cutoff = Date.now() - settings.maxJobAgeDays * 24 * 60 * 60 * 1000;

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { HTTP_TIMEOUT } from "../config";
 import { Job } from "../types";
 import { formatSalaryRange } from "../format";
+import { normalizeJobType } from "../utils";
 
 const JobSchema = z.object({
   id: z.number().transform(String),
@@ -16,6 +17,7 @@ const JobSchema = z.object({
   jobIndustry: z.array(z.string()).default([]),
   jobDescription: z.string().optional(),
   jobExcerpt: z.string().optional(),
+  jobType: z.union([z.string(), z.array(z.string())]).default(""),
   pubDate: z.string().default(""),
 });
 
@@ -37,6 +39,7 @@ export async function fetchJobicy(): Promise<Job[]> {
     salary: formatSalaryRange(j.annualSalaryMin, j.annualSalaryMax, j.salaryCurrency),
     salaryMinUsd:
       j.salaryCurrency?.toUpperCase() === "USD" ? (j.annualSalaryMin ?? undefined) : undefined,
+    jobType: normalizeJobType(Array.isArray(j.jobType) ? j.jobType[0] ?? "" : j.jobType),
     description: j.jobDescription || j.jobExcerpt,
     url: j.url,
     source: "Jobicy",

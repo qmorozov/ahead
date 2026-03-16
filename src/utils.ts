@@ -28,6 +28,20 @@ export const SENIORITY_PATTERNS: [string, RegExp][] = [
   ["Manager", /\b(?:manager|director|head of|vp\b)/i],
 ];
 
+export const JOB_TYPE_PRESETS = ["Full-time", "Part-time", "Contract", "Freelance", "Internship"];
+
+const JOB_TYPE_MAP: Record<string, string> = {
+  full_time: "full-time", "full-time": "full-time", fulltime: "full-time",
+  part_time: "part-time", "part-time": "part-time", parttime: "part-time",
+  contract: "contract", contractor: "contract",
+  freelance: "freelance",
+  internship: "internship", intern: "internship",
+};
+
+export function normalizeJobType(raw: string): string | undefined {
+  return JOB_TYPE_MAP[raw.toLowerCase().replace(/[\s-]+/g, "_")] ?? JOB_TYPE_MAP[raw.toLowerCase()];
+}
+
 export function detectSeniority(title: string): string | null {
   for (const [label, pattern] of SENIORITY_PATTERNS) {
     if (pattern.test(title)) return label;

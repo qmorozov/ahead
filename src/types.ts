@@ -8,6 +8,7 @@ export interface Job {
   salary?: string;
   description?: string;
   seniority?: string;
+  jobType?: string;
   salaryMinUsd?: number;
   url: string;
   source: string;

@@ -2,6 +2,7 @@ import axios from "axios";
 import { z } from "zod";
 import { HTTP_TIMEOUT } from "../config";
 import { Job } from "../types";
+import { normalizeJobType } from "../utils";
 
 const JobSchema = z.object({
   slug: z.string().default(""),
@@ -11,6 +12,7 @@ const JobSchema = z.object({
   location: z.string().default(""),
   url: z.string().default(""),
   tags: z.array(z.string()).default([]),
+  job_types: z.array(z.string()).default([]),
   description: z.string().optional(),
   created_at: z
     .number()
@@ -31,6 +33,7 @@ export async function fetchArbeitnow(): Promise<Job[]> {
     title: j.title,
     company: j.company_name,
     location: j.location || (j.remote ? "Remote" : "Unknown"),
+    jobType: j.job_types[0] ? normalizeJobType(j.job_types[0]) : undefined,
     description: j.description,
     url: j.url,
     source: "Arbeitnow",

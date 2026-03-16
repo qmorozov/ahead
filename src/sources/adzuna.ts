@@ -4,7 +4,7 @@ import { config, HTTP_TIMEOUT } from "../config";
 import { Job } from "../types";
 import { formatSalaryRange } from "../format";
 import { logError } from "../logger";
-import { stripHtml } from "../utils";
+import { normalizeJobType, stripHtml } from "../utils";
 
 const JobSchema = z.object({
   id: z.union([z.string(), z.number()]).transform(String),
@@ -16,6 +16,7 @@ const JobSchema = z.object({
   category: z.object({ tag: z.string().default("") }).default({ tag: "" }),
   salary_min: z.number().optional(),
   salary_max: z.number().optional(),
+  contract_type: z.string().optional(),
   created: z.string().default(""),
 });
 
@@ -58,6 +59,7 @@ async function fetchCountry(country: string): Promise<Job[]> {
     location: j.location.display_name || "Remote",
     salary: formatSalaryRange(j.salary_min, j.salary_max, COUNTRY_CURRENCY[country] ?? "USD"),
     salaryMinUsd: country === "us" ? (j.salary_min ?? undefined) : undefined,
+    jobType: j.contract_type ? normalizeJobType(j.contract_type) : undefined,
     description: j.description,
     url: j.redirect_url,
     source: "Adzuna",

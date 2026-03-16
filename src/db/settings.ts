@@ -17,6 +17,7 @@ export interface UserSettings {
   excludeKeywords: string[];
   locations: string[];
   seniority: string[];
+  jobTypes: string[];
   minSalaryUsd: number;
   checkIntervalMinutes: number;
   maxJobAgeDays: number;
@@ -32,6 +33,7 @@ export function createDefaultSettings(chatId: string): UserSettings {
     excludeKeywords: [],
     locations: [],
     seniority: [],
+    jobTypes: [],
     minSalaryUsd: 0,
     checkIntervalMinutes: 30,
     maxJobAgeDays: 7,
@@ -46,14 +48,15 @@ export function isOnboarded(settings: UserSettings): boolean {
 
 const stmtGetSettings = db.prepare(`SELECT * FROM settings WHERE chat_id = ?`);
 const stmtUpsertSettings = db.prepare(`
-  INSERT INTO settings (chat_id, roles, keywords, exclude_keywords, locations, seniority, min_salary_usd, check_interval_minutes, max_job_age_days, paused, jobs_sent)
-  VALUES (@chat_id, @roles, @keywords, @exclude_keywords, @locations, @seniority, @min_salary_usd, @check_interval_minutes, @max_job_age_days, @paused, 0)
+  INSERT INTO settings (chat_id, roles, keywords, exclude_keywords, locations, seniority, job_types, min_salary_usd, check_interval_minutes, max_job_age_days, paused, jobs_sent)
+  VALUES (@chat_id, @roles, @keywords, @exclude_keywords, @locations, @seniority, @job_types, @min_salary_usd, @check_interval_minutes, @max_job_age_days, @paused, 0)
   ON CONFLICT(chat_id) DO UPDATE SET
     roles = @roles,
     keywords = @keywords,
     exclude_keywords = @exclude_keywords,
     locations = @locations,
     seniority = @seniority,
+    job_types = @job_types,
     min_salary_usd = @min_salary_usd,
     check_interval_minutes = @check_interval_minutes,
     max_job_age_days = @max_job_age_days,
@@ -72,6 +75,7 @@ function rowToSettings(row: Record<string, unknown>): UserSettings {
     excludeKeywords: jsonArray(row.exclude_keywords),
     locations: jsonArray(row.locations),
     seniority: jsonArray(row.seniority),
+    jobTypes: jsonArray(row.job_types),
     minSalaryUsd: (row.min_salary_usd as number) ?? 0,
     checkIntervalMinutes: row.check_interval_minutes as number,
     maxJobAgeDays: row.max_job_age_days as number,
@@ -93,6 +97,7 @@ export function saveSettings(settings: UserSettings): void {
     exclude_keywords: JSON.stringify(settings.excludeKeywords),
     locations: JSON.stringify(settings.locations),
     seniority: JSON.stringify(settings.seniority),
+    job_types: JSON.stringify(settings.jobTypes),
     min_salary_usd: settings.minSalaryUsd,
     check_interval_minutes: settings.checkIntervalMinutes,
     max_job_age_days: settings.maxJobAgeDays,

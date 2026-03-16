@@ -5,7 +5,7 @@ import { getStoredJob, sendJob } from "./delivery";
 import { formatSettings } from "./format";
 import { logError } from "./logger";
 import { ROLE_TECHS } from "./filter";
-import { SENIORITY_LEVELS, parseCommaSeparated } from "./utils";
+import { SENIORITY_LEVELS, JOB_TYPE_PRESETS, parseCommaSeparated } from "./utils";
 
 type WizardStep = "welcome" | "roles" | "technologies" | "seniority" | "salary" | "locations";
 
@@ -255,6 +255,7 @@ type SettingKey =
   | "excludeKeywords"
   | "locations"
   | "seniority"
+  | "jobTypes"
   | "minSalaryUsd"
   | "checkIntervalMinutes"
   | "maxJobAgeDays";
@@ -266,6 +267,7 @@ const LABELS: Record<SettingKey, string> = {
   excludeKeywords: "Exclude",
   locations: "Locations",
   seniority: "Seniority",
+  jobTypes: "Job Type",
   minSalaryUsd: "Min Salary",
   checkIntervalMinutes: "Interval",
   maxJobAgeDays: "Max age",
@@ -296,9 +298,11 @@ function settingsKb(s: UserSettings): InlineKeyboard {
     .text("Locations", "set:locations")
     .row()
     .text("Seniority", "set:seniority")
-    .text("Min Salary", "set:minSalaryUsd")
+    .text("Job Type", "set:jobTypes")
     .row()
+    .text("Min Salary", "set:minSalaryUsd")
     .text("Interval", "set:checkIntervalMinutes")
+    .row()
     .text("Max age", "set:maxJobAgeDays")
     .row()
     .text(s.paused ? "\u25b6 Resume" : "\u23f8 Pause", "set:togglePause");
@@ -341,6 +345,17 @@ function salarySettingsKb(current: number): InlineKeyboard {
   for (let i = 0; i < presets.length; i += 3) {
     for (const p of presets.slice(i, i + 3))
       kb.text(current === p.value ? `\u2705 ${p.label}` : p.label, `set:sal:${p.value}`);
+    kb.row();
+  }
+  return kb.text("\u2190 Back", "set:back");
+}
+
+function jobTypeSettingsKb(selected: string[]): InlineKeyboard {
+  const set = new Set(selected);
+  const kb = new InlineKeyboard();
+  for (let i = 0; i < JOB_TYPE_PRESETS.length; i += 3) {
+    for (const item of JOB_TYPE_PRESETS.slice(i, i + 3))
+      kb.text(set.has(item.toLowerCase()) ? `\u2705 ${item}` : item, `set:jtype:${item}`);
     kb.row();
   }
   return kb.text("\u2190 Back", "set:back");
@@ -620,14 +635,20 @@ handlers.callbackQuery(/^set:/, async (ctx) => {
     else s.seniority.push(level);
     saveSettings(s);
     await ctx.answerCallbackQuery();
-    showToggleEditor(
-      ctx,
-      chatId,
-      "Seniority",
-      s.seniority,
-      senioritySettingsKb(s.seniority),
-      msgId,
-    );
+    showToggleEditor(ctx, chatId, "Seniority", s.seniority, senioritySettingsKb(s.seniority), msgId);
+    return;
+  }
+
+  if (data.startsWith("set:jtype:")) {
+    const type = data.slice(10).toLowerCase();
+    const s = loadSettings(chatId);
+    if (!s) { await ctx.answerCallbackQuery("Run /start first."); return; }
+    const idx = s.jobTypes.indexOf(type);
+    if (idx >= 0) s.jobTypes.splice(idx, 1);
+    else s.jobTypes.push(type);
+    saveSettings(s);
+    await ctx.answerCallbackQuery();
+    showToggleEditor(ctx, chatId, "Job Type", s.jobTypes, jobTypeSettingsKb(s.jobTypes), msgId);
     return;
   }
 
@@ -685,6 +706,10 @@ handlers.callbackQuery(/^set:/, async (ctx) => {
       senioritySettingsKb(s.seniority),
       msgId,
     );
+    return;
+  }
+  if (key === "jobTypes") {
+    showToggleEditor(ctx, chatId, "Job Type", s.jobTypes, jobTypeSettingsKb(s.jobTypes), msgId);
     return;
   }
   if (key === "minSalaryUsd") {

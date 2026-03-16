@@ -72,6 +72,7 @@ function collectNewJobs(
 
   for (const [, sourceJobs] of jobsBySource) {
     for (const original of filterJobs(sourceJobs, settings)) {
+      if (!original.title.trim()) continue;
       const key = jobKey(original);
       if (isSeen(chatId, key)) continue;
 

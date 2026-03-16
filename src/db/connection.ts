@@ -70,6 +70,8 @@ const migrations: string[] = [
     PRIMARY KEY (chat_id, norm_key)
   );
   CREATE INDEX IF NOT EXISTS idx_seen_titles_at ON seen_titles(seen_at);`,
+
+  `ALTER TABLE settings ADD COLUMN job_types TEXT NOT NULL DEFAULT '[]';`,
 ];
 
 const currentVersion = (db.pragma("user_version", { simple: true }) as number) ?? 0;

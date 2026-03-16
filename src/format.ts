@@ -23,6 +23,7 @@ export function formatSettings(settings: UserSettings): string {
     `Exclude \u00b7 ${fmt(settings.excludeKeywords, "\u2014")}`,
     `Locations \u00b7 ${fmt(settings.locations, "any")}`,
     `Seniority \u00b7 ${fmt(settings.seniority, "any")}`,
+    `Job type \u00b7 ${fmt(settings.jobTypes, "any")}`,
     `Min salary \u00b7 ${salary}`,
     `Interval \u00b7 ${settings.checkIntervalMinutes}min`,
     `Max age \u00b7 ${settings.maxJobAgeDays > 0 ? `${settings.maxJobAgeDays}d` : "off"}`,

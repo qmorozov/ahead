@@ -2,6 +2,7 @@ import axios from "axios";
 import { z } from "zod";
 import { HTTP_TIMEOUT } from "../config";
 import { Job } from "../types";
+import { normalizeJobType } from "../utils";
 
 const JobSchema = z.object({
   id: z.number().transform(String),
@@ -9,6 +10,7 @@ const JobSchema = z.object({
   company_name: z.string().default(""),
   candidate_required_location: z.string().default("Remote"),
   salary: z.string().default(""),
+  job_type: z.string().default(""),
   url: z.string().default(""),
   tags: z.array(z.string()).default([]),
   description: z.string().optional(),
@@ -29,6 +31,7 @@ export async function fetchRemotive(): Promise<Job[]> {
     company: j.company_name,
     location: j.candidate_required_location,
     salary: j.salary || undefined,
+    jobType: normalizeJobType(j.job_type),
     description: j.description,
     url: j.url,
     source: "Remotive",

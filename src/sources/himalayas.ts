@@ -3,6 +3,7 @@ import { z } from "zod";
 import { HTTP_TIMEOUT } from "../config";
 import { Job } from "../types";
 import { formatSalaryRange } from "../format";
+import { normalizeJobType } from "../utils";
 
 const JobSchema = z.object({
   guid: z.string().default(""),
@@ -16,6 +17,7 @@ const JobSchema = z.object({
   categories: z.array(z.string()).default([]),
   description: z.string().optional(),
   seniority: z.array(z.string()).default([]),
+  jobType: z.string().optional(),
   pubDate: z
     .union([z.string(), z.number()])
     .default("")
@@ -41,6 +43,7 @@ export async function fetchHimalayas(): Promise<Job[]> {
     salaryMinUsd: j.currency?.toUpperCase() === "USD" ? (j.minSalary ?? undefined) : undefined,
     description: j.description,
     seniority: j.seniority[0] || undefined,
+    jobType: j.jobType ? normalizeJobType(j.jobType) : undefined,
     url: j.applicationLink,
     source: "Himalayas",
     tags: j.categories,
