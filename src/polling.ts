@@ -28,6 +28,27 @@ interface NewJob {
   key: string;
 }
 
+export interface RejectedJob {
+  title: string;
+  company: string;
+  url: string;
+  reason: string;
+}
+
+export interface UserPollStats {
+  checked: number;
+  passed: number;
+  sent: number;
+  rejected: RejectedJob[];
+}
+
+const pollStats = new Map<string, UserPollStats>();
+const MAX_REJECTED = 10;
+
+export function getPollStats(chatId: string): UserPollStats | undefined {
+  return pollStats.get(chatId);
+}
+
 const CACHE_TTL_MS = 2 * 60 * 1000;
 let cachedJobs: Map<string, Job[]> | null = null;
 let cachedAt = 0;
@@ -236,6 +257,8 @@ async function processForUser(
 
   const chatId = settings.chatId;
   const firstRun = isFirstRun(chatId);
+  const stats: UserPollStats = pollStats.get(chatId) ?? { checked: 0, passed: 0, sent: 0, rejected: [] };
+  pollStats.set(chatId, stats);
 
   const allNew = collectNewJobs(chatId, jobsBySource, settings);
   if (allNew.length === 0) {
@@ -272,6 +295,21 @@ async function processForUser(
 
   const { relevant, irrelevant, signalsMap } = classifyByRelevance(newJobs, parsedMap, settings);
 
+  stats.checked += allNew.length;
+  stats.passed += relevant.length;
+  for (const nj of irrelevant) {
+    const reasons = signalsMap.get(nj.key) ?? [];
+    stats.rejected.push({
+      title: nj.job.title,
+      company: nj.job.company,
+      url: nj.job.url,
+      reason: reasons[0] ?? "low score",
+    });
+  }
+  if (stats.rejected.length > MAX_REJECTED) {
+    stats.rejected = stats.rejected.slice(-MAX_REJECTED);
+  }
+
   // Jobs rejected without LLM data are deferred — not marked seen so they
   // can be re-evaluated on the next cycle when parsing capacity is available.
   const parsedIrrelevant = irrelevant.filter((nj) => parsedMap.get(nj.key) !== null);
@@ -301,6 +339,7 @@ async function processForUser(
     markSeenBatch(chatId, skipped.map((nj) => nj.key));
   }
   if (delivered.length > 0) {
+    stats.sent += delivered.length;
     markSeenBatch(chatId, delivered.map((nj) => nj.key));
     markSeenBatch(chatId, parsedIrrelevant.map((nj) => nj.key));
     const preFilteredJobs = allNew.filter((_, i) => !relevantIndices.has(i));

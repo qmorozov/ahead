@@ -40,7 +40,12 @@ setOnWizardComplete((chatId) => {
 
 setOnIntervalChanged(() => startCron());
 
-bot.api.deleteMyCommands().catch(() => {});
+bot.api.setMyCommands([
+  { command: "start", description: "Set up your preferences" },
+  { command: "settings", description: "Edit filters" },
+  { command: "status", description: "See recent activity" },
+  { command: "cancel", description: "Cancel current action" },
+]).catch(() => {});
 bot.start({ onStart: () => log("Bot started polling.") });
 
 const onboarded = loadAllSettings().filter((s) => isOnboarded(s));

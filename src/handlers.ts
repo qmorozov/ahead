@@ -2,6 +2,7 @@ import { Composer, GrammyError, InlineKeyboard, Keyboard } from "grammy";
 import type { Context } from "grammy";
 import { createDefaultSettings, isOnboarded, UserSettings, loadSettings, saveSettings } from "./db";
 import { getStoredJob, sendJob } from "./delivery";
+import { getPollStats } from "./polling";
 import { formatSettings } from "./format";
 import { logError } from "./logger";
 import { ROLE_TECHS } from "./filter";
@@ -286,6 +287,7 @@ function replyKb(paused: boolean): Keyboard {
   return new Keyboard()
     .text("\u2699\ufe0f Settings")
     .text(paused ? "\u25b6 Resume" : "\u23f8 Pause")
+    .text("\ud83d\udcca Status")
     .resized();
 }
 
@@ -505,12 +507,37 @@ handlers.command("cancel", async (ctx) => {
   else await ctx.reply("Cancelled.");
 });
 
+async function replyStatus(ctx: Context): Promise<void> {
+  const chatId = String(ctx.chat!.id);
+  const stats = getPollStats(chatId);
+  if (!stats) { await ctx.reply("No data yet. Wait for the next poll cycle."); return; }
+
+  const lines = [
+    `Scanned: ${stats.checked} jobs`,
+    `Sent to you: ${stats.sent}`,
+  ];
+
+  if (stats.rejected.length > 0) {
+    lines.push("", "Recently skipped:");
+    for (const r of stats.rejected.slice(-5)) {
+      const title = r.title.length > 40 ? r.title.slice(0, 40) + "..." : r.title;
+      lines.push(`\u2022 <a href="${r.url}">${title}</a> \u2014 ${r.reason}`);
+    }
+  }
+
+  await ctx.reply(lines.join("\n"), { parse_mode: "HTML", link_preview_options: { is_disabled: true } });
+}
+
+handlers.command("status", replyStatus);
+
 handlers.hears("\u2699\ufe0f Settings", async (ctx) => {
   const chatId = String(ctx.chat.id);
   const s = loadSettings(chatId);
   if (s && isOnboarded(s)) showSettings(ctx, chatId, s);
   else await ctx.reply("Run /start first to set up your preferences.");
 });
+
+handlers.hears("\ud83d\udcca Status", replyStatus);
 
 handlers.hears(/^(\u23f8 Pause|\u25b6 Resume)$/, async (ctx) => {
   const chatId = String(ctx.chat.id);
