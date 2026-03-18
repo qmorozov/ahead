@@ -2,9 +2,8 @@ import axios from "axios";
 import { z } from "zod";
 import { config, HTTP_TIMEOUT } from "../config";
 import { Job } from "../types";
-import { formatSalaryRange } from "../format";
-import { logError } from "../logger";
-import { normalizeJobType, stripHtml } from "../utils";
+import { formatSalaryRange, sleep, normalizeJobType, stripHtml } from "../lib/utils";
+import { logError } from "../lib/logger";
 
 const JobSchema = z.object({
   id: z.union([z.string(), z.number()]).transform(String),
@@ -71,13 +70,15 @@ async function fetchCountry(country: string): Promise<Job[]> {
 export async function fetchAdzuna(): Promise<Job[]> {
   if (!config.adzunaAppId || !config.adzunaAppKey) return [];
 
-  const jobs: Job[] = []; // sequential to stay within Adzuna's rate limit
-  for (const country of COUNTRIES) {
+  // Sequential with short delay to respect Adzuna rate limits
+  const jobs: Job[] = [];
+  for (let i = 0; i < COUNTRIES.length; i++) {
     try {
-      jobs.push(...(await fetchCountry(country)));
+      jobs.push(...(await fetchCountry(COUNTRIES[i]!)));
     } catch (err) {
-      logError(`Adzuna [${country}]`, err);
+      logError(`Adzuna [${COUNTRIES[i]}]`, err);
     }
+    if (i < COUNTRIES.length - 1) await sleep(500);
   }
   return jobs;
 }

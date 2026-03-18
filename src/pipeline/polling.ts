@@ -1,6 +1,7 @@
-import { sources, fetchWithRetry } from "./sources";
-import { filterJobs, buildScoringContext, scoreJob } from "./filter";
-import { sendJob, sendJobs } from "./delivery";
+import { sources, fetchWithRetry } from "../sources";
+import { filterJobs, buildScoringContext, scoreJob, ScoringContext } from "./filter";
+import { sendJob, sendJobs } from "../bot/delivery";
+import { SCORING, POLLING, LLM } from "../constants";
 import {
   isOnboarded,
   UserSettings,
@@ -8,20 +9,20 @@ import {
   pruneParsedCache,
   pruneCompanyUrls,
   pruneSeen,
-  isSeen,
+  loadSeenKeys,
   markSeenBatch,
   isFirstRun,
   incrementJobsSent,
-  isTitleSeen,
+  loadSeenTitles,
   markTitleSeen,
   pruneSeenTitles,
-} from "./db";
-import { log, debug, logError } from "./logger";
-import { Job, ParsedJob, jobKey } from "./types";
-import { parseJobDescription, classifyBatch, PARSES_PER_HOUR } from "./llm";
-import { fetchDjinniEnrichment } from "./sources/djinni";
+} from "../db";
+import { log, debug, logError } from "../lib/logger";
+import { Job, ParsedJob, jobKey } from "../types";
+import { parseJobDescription, classifyBatch, quickTagJob } from "./llm";
+import { fetchDjinniEnrichment } from "../sources/djinni";
 import { resolveCompanyUrls } from "./company";
-import { normalizeForDedup } from "./utils";
+import { normalizeForDedup, sleep } from "../lib/utils";
 
 interface NewJob {
   job: Job;
@@ -49,14 +50,31 @@ export function getPollStats(chatId: string): UserPollStats | undefined {
   return pollStats.get(chatId);
 }
 
-const CACHE_TTL_MS = 2 * 60 * 1000;
+export function clearUserState(chatId: string): void {
+  pollStats.delete(chatId);
+  lastPolledAt.delete(chatId);
+  for (const key of deferredCount.keys()) {
+    if (key.startsWith(`${chatId}::`)) deferredCount.delete(key);
+  }
+}
+
 let cachedJobs: Map<string, Job[]> | null = null;
 let cachedAt = 0;
 
 const lastPolledAt = new Map<string, number>();
+const deferredCount = new Map<string, { cycles: number; updatedAt: number }>(); // chatId::jobKey -> state
+const MAX_DEFER_CYCLES = 3;
+const DEFER_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+
+function pruneDeferredCount(): void {
+  const cutoff = Date.now() - DEFER_TTL_MS;
+  for (const [key, entry] of deferredCount) {
+    if (entry.updatedAt < cutoff) deferredCount.delete(key);
+  }
+}
 
 async function fetchAllSources(): Promise<Map<string, Job[]>> {
-  if (cachedJobs && Date.now() - cachedAt < CACHE_TTL_MS) {
+  if (cachedJobs && Date.now() - cachedAt < POLLING.SOURCE_CACHE_TTL_MS) {
     return cachedJobs;
   }
 
@@ -84,24 +102,28 @@ async function fetchAllSources(): Promise<Map<string, Job[]>> {
 }
 
 function collectNewJobs(
-  chatId: string,
   jobsBySource: Map<string, Job[]>,
   settings: UserSettings,
+  seenKeys: Set<string>,
+  seenTitleKeys: Set<string>,
+  ctx: ScoringContext,
 ): NewJob[] {
   const newJobs: NewJob[] = [];
-  const seenTitles = new Set<string>();
+  const cycleTitles = new Set<string>();
 
   for (const [, sourceJobs] of jobsBySource) {
-    for (const original of filterJobs(sourceJobs, settings)) {
+    for (const original of filterJobs(sourceJobs, settings, ctx)) {
       if (!original.title.trim()) continue;
       const key = jobKey(original);
-      if (isSeen(chatId, key)) continue;
+      if (seenKeys.has(key)) continue;
 
-      if (original.company) {
-        const normKey = normalizeForDedup(original.title, original.company);
-        if (seenTitles.has(normKey) || isTitleSeen(chatId, normKey)) continue;
-        seenTitles.add(normKey);
-      }
+      const normKey = normalizeForDedup(original.title, original.company || "unknown");
+      // Within same cycle: dedup by title only (catches same job from different sources)
+      const titleOnly = normKey.split("::")[0]!;
+      if (cycleTitles.has(titleOnly)) continue;
+      // Cross-cycle: dedup by title+company (allows same title at different companies)
+      if (seenTitleKeys.has(normKey)) continue;
+      cycleTitles.add(titleOnly);
 
       newJobs.push({ job: { ...original }, key });
     }
@@ -132,24 +154,29 @@ async function parseJobs(newJobs: NewJob[], settings: UserSettings, maxParses: n
   let parsed = 0;
   for (const { job, key } of prioritized) {
     if (parsed >= maxParses) {
-      parsedMap.set(key, null);
+      // Quick-tag with 8B model for jobs that exceed full parse budget
+      const quickResult = await quickTagJob(key, job.description ?? "");
+      parsedMap.set(key, quickResult);
       continue;
     }
     const result = await parseJobDescription(key, job.description ?? "");
-    parsedMap.set(key, result);
-    if (result !== null) parsed++;
+    if (result !== null) {
+      parsedMap.set(key, result);
+      parsed++;
+    } else {
+      // Full parse unavailable (quota/error) — fall back to quick-tag for better scoring
+      const quickResult = await quickTagJob(key, job.description ?? "");
+      parsedMap.set(key, quickResult);
+    }
   }
   return parsedMap;
 }
 
-const MAX_PER_COMPANY = 3;
-
 function classifyByRelevance(
   newJobs: NewJob[],
   parsedMap: Map<string, ParsedJob | null>,
-  settings: UserSettings,
-): { relevant: NewJob[]; irrelevant: NewJob[]; signalsMap: Map<string, string[]> } {
-  const ctx = buildScoringContext(settings);
+  ctx: ScoringContext,
+): { relevant: NewJob[]; irrelevant: NewJob[]; companyCapped: NewJob[]; signalsMap: Map<string, string[]> } {
   const scores = new Map<string, number>();
   const signalsMap = new Map<string, string[]>();
   const relevant: NewJob[] = [];
@@ -157,12 +184,11 @@ function classifyByRelevance(
 
   for (const entry of newJobs) {
     const parsed = parsedMap.get(entry.key) ?? null;
-    const { score, signals } = scoreJob(entry.job, parsed, ctx);
-    scores.set(entry.key, score);
-    signalsMap.set(entry.key, signals);
-    const threshold = parsed ? 20 : 15;
-    const pass = score >= threshold;
-    debug(`score ${score}/${threshold} ${pass ? "PASS" : "FAIL"} "${entry.job.title}" [${signals.join(", ")}]`);
+    const result = scoreJob(entry.job, parsed, ctx);
+    scores.set(entry.key, result.score);
+    signalsMap.set(entry.key, result.signals);
+    const pass = result.score >= SCORING.THRESHOLD;
+    debug(`score ${result.score} (${result.normalized}%) ${pass ? "PASS" : "FAIL"} "${entry.job.title}" [${result.signals.join(", ")}]`);
     (pass ? relevant : irrelevant).push(entry);
   }
 
@@ -170,19 +196,49 @@ function classifyByRelevance(
 
   const companyCounts = new Map<string, number>();
   const capped: NewJob[] = [];
-  const overflow: NewJob[] = [];
+  const companyCapped: NewJob[] = [];
   for (const entry of relevant) {
-    const co = entry.job.company.toLowerCase().trim();
+    const co = entry.job.company?.toLowerCase().trim();
+    if (!co) { capped.push(entry); continue; } // no company name → no cap
     const count = companyCounts.get(co) ?? 0;
-    if (count < MAX_PER_COMPANY) {
+    if (count < POLLING.MAX_PER_COMPANY) {
       companyCounts.set(co, count + 1);
       capped.push(entry);
     } else {
-      overflow.push(entry);
+      companyCapped.push(entry);
     }
   }
 
-  return { relevant: capped, irrelevant: [...irrelevant, ...overflow], signalsMap };
+  return { relevant: capped, irrelevant, companyCapped, signalsMap };
+}
+
+/** Split irrelevant jobs into those ready to mark seen vs deferred for re-evaluation. */
+function classifyIrrelevant(
+  chatId: string,
+  irrelevant: NewJob[],
+  parsedMap: Map<string, ParsedJob | null>,
+): { markSeen: NewJob[]; deferredTotal: number } {
+  const ready: NewJob[] = [];
+  for (const nj of irrelevant) {
+    const deferKey = `${chatId}::${nj.key}`;
+    const wasParsed = parsedMap.get(nj.key) != null;
+
+    if (wasParsed) {
+      ready.push(nj);
+      deferredCount.delete(deferKey);
+      continue;
+    }
+
+    const prev = deferredCount.get(deferKey);
+    const cycles = (prev?.cycles ?? 0) + 1;
+    if (cycles >= MAX_DEFER_CYCLES) {
+      ready.push(nj);
+      deferredCount.delete(deferKey);
+    } else {
+      deferredCount.set(deferKey, { cycles, updatedAt: Date.now() });
+    }
+  }
+  return { markSeen: ready, deferredTotal: irrelevant.length - ready.length };
 }
 
 async function enrichJobs(newJobs: NewJob[]): Promise<void> {
@@ -199,6 +255,7 @@ async function enrichJobs(newJobs: NewJob[]): Promise<void> {
       if (!nj.job.company && enriched.company) nj.job.company = enriched.company;
       if (!nj.job.location && enriched.location) nj.job.location = enriched.location;
     }
+    if (i + 5 < djinniJobs.length) await sleep(2000);
   }
 
   const jobs = newJobs.map((nj) => nj.job);
@@ -217,17 +274,24 @@ async function deliverJobs(
   parsedMap: Map<string, ParsedJob | null>,
   signalsMap: Map<string, string[]>,
   firstRun: boolean,
-): Promise<{ delivered: NewJob[]; skipped: NewJob[] }> {
+): Promise<NewJob[]> {
   const getParsed = (nj: NewJob) => parsedMap.get(nj.key) ?? null;
 
   if (firstRun) {
-    const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
-    const fresh = newJobs.filter((nj) => new Date(nj.job.publishedAt).getTime() > dayAgo);
-    const newest = fresh[0];
-    if (!newest) return { delivered: [], skipped: newJobs };
+    const sixHoursAgo = Date.now() - 6 * 60 * 60 * 1000;
+    const fresh = newJobs.filter((nj) => {
+      const ts = new Date(nj.job.publishedAt).getTime();
+      return isNaN(ts) || ts > sixHoursAgo;
+    });
+    const top = fresh.slice(0, 3);
+    if (top.length === 0) return [];
 
-    const ok = await sendJob(chatId, newest.job, getParsed(newest));
-    return { delivered: ok ? [newest] : [], skipped: newJobs.filter((nj) => nj !== newest) };
+    const delivered: NewJob[] = [];
+    for (const nj of top) {
+      if (await sendJob(chatId, nj.job, getParsed(nj))) delivered.push(nj);
+    }
+    // Don't mark remaining as skipped — they'll appear in next cycle
+    return delivered;
   }
 
   if (newJobs.length <= 3) {
@@ -235,14 +299,14 @@ async function deliverJobs(
     for (const nj of newJobs) {
       if (await sendJob(chatId, nj.job, getParsed(nj))) delivered.push(nj);
     }
-    return { delivered, skipped: [] };
+    return delivered;
   }
 
   const jobs = newJobs.map((nj) => nj.job);
   const sent = await sendJobs(chatId, jobs, parsedMap, signalsMap);
   const sentKeys = new Set(sent.map(jobKey));
   const delivered = newJobs.filter((nj) => sentKeys.has(nj.key));
-  return { delivered, skipped: [] };
+  return delivered;
 }
 
 async function processForUser(
@@ -260,18 +324,27 @@ async function processForUser(
   const stats: UserPollStats = pollStats.get(chatId) ?? { checked: 0, passed: 0, sent: 0, rejected: [] };
   pollStats.set(chatId, stats);
 
-  const allNew = collectNewJobs(chatId, jobsBySource, settings);
+  const ctx = buildScoringContext(settings);
+  const seenKeys = loadSeenKeys(chatId);
+  const seenTitleKeys = loadSeenTitles(chatId);
+  const allNew = collectNewJobs(jobsBySource, settings, seenKeys, seenTitleKeys, ctx);
   if (allNew.length === 0) {
     log(`[${chatId}] No new jobs.`);
     return;
   }
 
-  const profile = [
-    settings.roles.length > 0 ? `Role: ${settings.roles.join(", ")}` : "",
-    settings.keywords.length > 0 ? `Tech: ${settings.keywords.slice(0, 10).join(", ")}` : "",
-    settings.seniority.length > 0 ? `Level: ${settings.seniority.join(", ")}` : "",
-    settings.excludeKeywords.length > 0 ? `Exclude: ${settings.excludeKeywords.join(", ")}` : "",
-  ].filter(Boolean).join(". ");
+  // Sanitize user settings to prevent prompt injection
+  const sanitize = (s: string) => s.replace(/[\n\r]/g, " ").replace(/\s{2,}/g, " ").trim();
+  const profileParts: [string, string][] = [
+    ["Role", sanitize(settings.roles.join(", "))],
+    ["Tech", sanitize(settings.keywords.slice(0, 10).join(", "))],
+    ["Level", sanitize(settings.seniority.join(", "))],
+    ["Exclude", sanitize(settings.excludeKeywords.join(", "))],
+  ];
+  const profile = profileParts
+    .filter(([, value]) => value.length > 0)
+    .map(([label, value]) => `${label}: ${value}`)
+    .join(". ");
 
   const classifyInput = allNew.map((nj, i) => ({
     index: i,
@@ -293,7 +366,7 @@ async function processForUser(
 
   const parsedMap = await parseJobs(newJobs, settings, parseBudget);
 
-  const { relevant, irrelevant, signalsMap } = classifyByRelevance(newJobs, parsedMap, settings);
+  const { relevant, irrelevant, companyCapped, signalsMap } = classifyByRelevance(newJobs, parsedMap, ctx);
 
   stats.checked += allNew.length;
   stats.passed += relevant.length;
@@ -310,24 +383,23 @@ async function processForUser(
     stats.rejected = stats.rejected.slice(-MAX_REJECTED);
   }
 
-  // Jobs rejected without LLM data are deferred — not marked seen so they
-  // can be re-evaluated on the next cycle when parsing capacity is available.
-  const parsedIrrelevant = irrelevant.filter((nj) => parsedMap.get(nj.key) !== null);
-  const deferred = irrelevant.length - parsedIrrelevant.length;
+  const { markSeen, deferredTotal: deferred } = classifyIrrelevant(chatId, irrelevant, parsedMap);
 
   if (irrelevant.length > 0) {
     log(`[${chatId}] Filtered out ${irrelevant.length} irrelevant jobs via AI${deferred > 0 ? ` (${deferred} deferred)` : ""}`);
   }
 
+  const preFilteredJobs = allNew.filter((_, i) => !relevantIndices.has(i));
+
   if (relevant.length === 0) {
-    markSeenBatch(chatId, parsedIrrelevant.map((nj) => nj.key));
+    markSeenBatch(chatId, [...markSeen, ...companyCapped, ...preFilteredJobs].map((nj) => nj.key));
     log(`[${chatId}] No relevant jobs (${newJobs.length} filtered out).`);
     return;
   }
 
   await enrichJobs(relevant);
 
-  const { delivered, skipped } = await deliverJobs(
+  const delivered = await deliverJobs(
     chatId,
     relevant,
     parsedMap,
@@ -335,27 +407,30 @@ async function processForUser(
     firstRun,
   );
 
-  if (skipped.length > 0) {
-    markSeenBatch(chatId, skipped.map((nj) => nj.key));
-  }
+  // Consolidate all processed jobs and mark as seen in one batch.
+  // companyCapped are relevant but exceeded per-company limit — mark seen to avoid re-appearing.
+  const processedJobs = [...markSeen, ...companyCapped, ...preFilteredJobs, ...delivered];
+  markSeenBatch(chatId, processedJobs.map((nj) => nj.key));
+
   if (delivered.length > 0) {
     stats.sent += delivered.length;
-    markSeenBatch(chatId, delivered.map((nj) => nj.key));
-    markSeenBatch(chatId, parsedIrrelevant.map((nj) => nj.key));
-    const preFilteredJobs = allNew.filter((_, i) => !relevantIndices.has(i));
-    markSeenBatch(chatId, preFilteredJobs.map((nj) => nj.key));
-    for (const nj of [...delivered, ...irrelevant, ...skipped, ...preFilteredJobs]) {
-      if (nj.job.company) markTitleSeen(chatId, normalizeForDedup(nj.job.title, nj.job.company));
-    }
     incrementJobsSent(chatId, delivered.length);
   }
 
+  for (const nj of processedJobs) {
+    if (nj.job.company) markTitleSeen(chatId, normalizeForDedup(nj.job.title, nj.job.company));
+  }
+
   log(
-    `[${chatId}] ${firstRun ? "First run: " : ""}Sent ${delivered.length} job(s), ${skipped.length} skipped, ${irrelevant.length} irrelevant.`,
+    `[${chatId}] ${firstRun ? "First run: " : ""}Sent ${delivered.length} job(s), ${irrelevant.length} irrelevant.`,
   );
 }
 
 let polling = false;
+
+export function isPolling(): boolean {
+  return polling;
+}
 
 export async function pollAllUsers(): Promise<void> {
   if (polling) return;
@@ -381,13 +456,14 @@ export async function pollAllUsers(): Promise<void> {
     pruneParsedCache();
     pruneCompanyUrls();
     pruneSeenTitles();
+    pruneDeferredCount();
     for (const s of due) pruneSeen(s.chatId);
 
     const jobsBySource = await fetchAllSources();
     log(`Polling for ${due.length} of ${active.length} user(s)...`);
 
     const afterFetch = Date.now();
-    const parseBudget = Math.max(10, Math.floor(PARSES_PER_HOUR / due.length));
+    const parseBudget = Math.max(10, Math.floor(LLM.PARSES_PER_HOUR / due.length));
     for (const settings of due) {
       try {
         await processForUser(settings, jobsBySource, parseBudget);

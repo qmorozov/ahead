@@ -1,6 +1,6 @@
 import axios from "axios";
 import { HTTP_TIMEOUT } from "../config";
-import { rssParser } from "../utils";
+import { rssParser } from "../lib/utils";
 import { Job } from "../types";
 
 const FEED_URL = "https://djinni.co/jobs/rss/";
@@ -11,7 +11,7 @@ export async function fetchDjinni(): Promise<Job[]> {
   return feed.items.map((item) => ({
     id: item.guid ?? item.link ?? "",
     title: item.title ?? "",
-    company: extractCompany(item.content ?? ""),
+    company: "", // resolved via enrichment (JSON-LD)
     location: "",
     description: item.content || item.contentSnippet,
     url: item.link ?? "",
@@ -21,26 +21,8 @@ export async function fetchDjinni(): Promise<Job[]> {
   }));
 }
 
-const NOT_COMPANY =
-  /^(about|project|role|position|responsibilities|requirements|overview|customer$|gambling|the\s|we\s|our\s|your\s|join\s|що|як|ми|про|вимоги|обов|опис|необхідн|потрібн|завдання|умови)/i;
-
-const JOB_TITLE_WORDS =
-  /\b(intern|developer|manager|engineer|designer|analyst|specialist|lead\b|senior|junior|middle|head of|recruiter|buyer|officer)\b/i;
-
-function extractCompany(html: string): string {
-  const strong = html.match(/<strong>([^<]+)<\/strong>/);
-  const raw = strong?.[1]
-    ?.replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/[:\u2014\u2013]/g, "")
-    .trim();
-
-  if (raw && raw.length <= 40 && !NOT_COMPANY.test(raw) && !JOB_TITLE_WORDS.test(raw)) {
-    return raw;
-  }
-
-  return "";
-}
+// Company name is always resolved via enrichment (JSON-LD from job page).
+// RSS description HTML is too unreliable for extraction.
 
 interface EnrichmentData {
   company: string;
@@ -83,7 +65,7 @@ export async function fetchDjinniEnrichment(url: string): Promise<EnrichmentData
     setCache(url, enriched);
     return enriched;
   } catch {
-    setCache(url, { company: "", location: "" });
-    return { company: "", location: "" };
+    // On failure, return stale cached data if available; don't cache the failure
+    return cached ?? { company: "", location: "" };
   }
 }

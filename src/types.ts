@@ -15,13 +15,16 @@ export interface Job {
   companyUrl?: string;
   tags: string[];
   publishedAt: string;
+  boardJobCount?: number;
 }
+
+const SeniorityEnum = z.enum(["Intern", "Junior", "Middle", "Senior", "Staff", "Lead", "Manager"]);
 
 export const ParsedJobSchema = z.object({
   requirements: z.array(z.string()),
   niceToHave: z.array(z.string()),
   responsibilities: z.array(z.string()),
-  seniority: z.string().nullable(),
+  seniority: SeniorityEnum.nullable().catch(null),
   salary: z.string().nullable(),
   primaryTags: z.array(z.string()),
 });
@@ -30,4 +33,13 @@ export type ParsedJob = z.infer<typeof ParsedJobSchema>;
 
 export function jobKey(job: Job): string {
   return `${job.source.toLowerCase()}::${job.id}`;
+}
+
+export function hasContent(parsed: ParsedJob): boolean {
+  return (
+    parsed.requirements.length > 0 ||
+    parsed.niceToHave.length > 0 ||
+    parsed.responsibilities.length > 0 ||
+    parsed.primaryTags.length > 0
+  );
 }

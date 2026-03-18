@@ -1,6 +1,6 @@
 import crypto from "crypto";
-import { bot } from "./bot";
-import { Job, ParsedJob, jobKey } from "./types";
+import { bot } from "./instance";
+import { Job, ParsedJob, jobKey } from "../types";
 import { formatMessage, formatDigestItem, formatDigest } from "./format";
 import {
   PendingJobEntry,
@@ -8,9 +8,10 @@ import {
   deletePendingJob,
   loadAllPendingJobs,
   pruneExpiredPendingJobs,
-} from "./db";
-import { log, logError } from "./logger";
-import { sleep } from "./utils";
+} from "../db";
+import { log, logError } from "../lib/logger";
+import { sleep } from "../lib/utils";
+import { DELIVERY } from "../constants";
 
 const pendingJobs = new Map<string, PendingJobEntry>();
 const STORE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -45,27 +46,42 @@ export function getStoredJob(id: string): PendingJobEntry | undefined {
   return pendingJobs.get(id);
 }
 
+const MAX_SEND_RETRIES = 2;
+const RETRY_DELAY_MS = 2000;
+
+async function sendWithRetry(label: string, fn: () => Promise<unknown>): Promise<boolean> {
+  for (let attempt = 1; attempt <= MAX_SEND_RETRIES; attempt++) {
+    try {
+      await fn();
+      return true;
+    } catch (error) {
+      if (attempt < MAX_SEND_RETRIES) {
+        logError(`${label} (attempt ${attempt}/${MAX_SEND_RETRIES})`, error);
+        await sleep(RETRY_DELAY_MS);
+      } else {
+        logError(label, error);
+      }
+    }
+  }
+  return false;
+}
+
 export async function sendJob(
   chatId: string,
   job: Job,
   parsed: ParsedJob | null = null,
 ): Promise<boolean> {
-  try {
-    await bot.api.sendMessage(chatId, formatMessage(job, parsed), {
+  return sendWithRetry("Telegram", () =>
+    bot.api.sendMessage(chatId, formatMessage(job, parsed), {
       parse_mode: "HTML",
       link_preview_options: { is_disabled: true },
       reply_markup: {
         inline_keyboard: [[{ text: "View job posting", url: job.url }]],
       },
-    });
-    return true;
-  } catch (error) {
-    logError("Telegram", error);
-    return false;
-  }
+    }),
+  );
 }
 
-const DIGEST_PAGE_SIZE = 10;
 const BUTTONS_PER_ROW = 5;
 
 interface DigestPage {
@@ -76,6 +92,7 @@ interface DigestPage {
 }
 
 function buildDigestPage(
+  chatId: string,
   pageJobs: Job[],
   parsedMap: Map<string, ParsedJob | null>,
   pageOffset: number,
@@ -91,12 +108,13 @@ function buildDigestPage(
     const job = pageJobs[i];
     if (!job) continue;
     const globalIndex = pageOffset + i + 1;
-    const parsed = parsedMap.get(jobKey(job)) ?? null;
-    const signals = signalsMap.get(jobKey(job));
+    const key = jobKey(job);
+    const parsed = parsedMap.get(key) ?? null;
+    const signals = signalsMap.get(key);
     items.push(formatDigestItem(globalIndex, job, parsed, signals));
 
     const id = generateId();
-    const entry: PendingJobEntry = { id, job, parsed, storedAt: Date.now() };
+    const entry: PendingJobEntry = { id, chatId, job, parsed, storedAt: Date.now() };
     pendingJobs.set(id, entry);
     entries.push(entry);
 
@@ -107,7 +125,13 @@ function buildDigestPage(
     }
   }
 
-  const text = pageOffset === 0 ? formatDigest(items, totalJobs) : items.join("\n\n");
+  const renderText = () => (pageOffset === 0 ? formatDigest(items, totalJobs) : items.join("\n\n"));
+  let text = renderText();
+  // Remove items from the end until the message fits (avoids cutting HTML tags)
+  while (items.length > 1 && text.length > DELIVERY.MAX_LENGTH) {
+    items.pop();
+    text = renderText();
+  }
 
   return { text, buttons, jobs: pageJobs, entries };
 }
@@ -123,28 +147,28 @@ export async function sendJobs(
   const sent: Job[] = [];
   const allEntries: PendingJobEntry[] = [];
 
-  for (let offset = 0; offset < jobs.length; offset += DIGEST_PAGE_SIZE) {
-    const pageJobs = jobs.slice(offset, offset + DIGEST_PAGE_SIZE);
-    const page = buildDigestPage(pageJobs, parsedMap, offset, jobs.length, signalsMap);
+  for (let offset = 0; offset < jobs.length; offset += DELIVERY.PAGE_SIZE) {
+    const pageJobs = jobs.slice(offset, offset + DELIVERY.PAGE_SIZE);
+    const page = buildDigestPage(chatId, pageJobs, parsedMap, offset, jobs.length, signalsMap);
     allEntries.push(...page.entries);
 
-    try {
-      await bot.api.sendMessage(chatId, page.text, {
+    const pageSent = await sendWithRetry("Telegram digest", () =>
+      bot.api.sendMessage(chatId, page.text, {
         parse_mode: "HTML",
         link_preview_options: { is_disabled: true },
         reply_markup: { inline_keyboard: page.buttons },
-      });
-      sent.push(...page.jobs);
-    } catch (error) {
-      logError("Telegram digest", error);
-    }
+      }),
+    );
+    if (pageSent) sent.push(...page.jobs);
 
-    if (offset + DIGEST_PAGE_SIZE < jobs.length) {
+    if (offset + DELIVERY.PAGE_SIZE < jobs.length) {
       await sleep(1000);
     }
   }
 
   savePendingJobBatch(allEntries);
-  log(`Sent digest: ${sent.length} jobs in ${Math.ceil(jobs.length / DIGEST_PAGE_SIZE)} message(s)`);
+  log(
+    `Sent digest: ${sent.length} jobs in ${Math.ceil(jobs.length / DELIVERY.PAGE_SIZE)} message(s)`,
+  );
   return sent;
 }

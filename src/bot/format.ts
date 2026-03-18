@@ -1,15 +1,7 @@
-import { Job, ParsedJob } from "./types";
-import { UserSettings } from "./db";
-import { stripHtml, detectSeniority } from "./utils";
-
-export function formatSalaryRange(
-  min?: number | null,
-  max?: number | null,
-  currency = "USD",
-): string | undefined {
-  if (!min || !max) return undefined;
-  return `${currency} ${min.toLocaleString()} – ${max.toLocaleString()}`;
-}
+import { Job, ParsedJob, hasContent } from "../types";
+import { UserSettings } from "../db";
+import { stripHtml, detectSeniority } from "../lib/utils";
+import { DELIVERY } from "../constants";
 
 export function formatSettings(settings: UserSettings): string {
   const fmt = (arr: string[], fallback: string) => (arr.length > 0 ? arr.join(", ") : fallback);
@@ -39,6 +31,15 @@ function escapeHtml(text: string): string {
     .replace(/"/g, "&quot;");
 }
 
+function isSafeUrl(url: string): boolean {
+  try {
+    const p = new URL(url);
+    return p.protocol === "https:" || p.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
 function timeAgo(dateStr: string): string {
   const now = Date.now();
   const posted = new Date(dateStr).getTime();
@@ -61,28 +62,32 @@ function timeAgo(dateStr: string): string {
   return `about ${weeks} weeks ago`;
 }
 
-const MAX_MESSAGE_LENGTH = 4096;
-
 const CATEGORY_WORDS =
   /programming|jobs|remote|development|design|management|marketing|writing|devops & sysadmin/i;
 
 function companyHtml(job: Job): string {
   const name = escapeHtml(job.company);
-  return job.companyUrl ? `<a href="${escapeHtml(job.companyUrl)}">${name}</a>` : name;
+  return job.companyUrl && isSafeUrl(job.companyUrl)
+    ? `<a href="${escapeHtml(job.companyUrl)}">${name}</a>`
+    : name;
 }
 
 function techTags(job: Job, parsed: ParsedJob | null, limit: number): string[] {
-  return (
-    parsed?.primaryTags?.slice(0, limit) ??
-    job.tags
-      .filter((t) => !CATEGORY_WORDS.test(t))
-      .slice(0, limit)
-      .map((t) => t.toLowerCase())
-  );
+  if (parsed?.primaryTags && parsed.primaryTags.length > 0) {
+    return parsed.primaryTags.slice(0, limit);
+  }
+  return job.tags
+    .filter((t) => !CATEGORY_WORDS.test(t))
+    .slice(0, limit)
+    .map((t) => t.toLowerCase());
 }
 
 export function formatDigestItem(index: number, job: Job, parsed: ParsedJob | null, signals?: string[]): string {
-  const title = `<b>${index}.</b> <a href="${escapeHtml(job.url)}">${escapeHtml(job.title)}</a> — ${companyHtml(job)}`;
+  const company = job.company ? ` — ${companyHtml(job)}` : "";
+  const url = isSafeUrl(job.url) ? escapeHtml(job.url) : "";
+  const title = url
+    ? `<b>${index}.</b> <a href="${url}">${escapeHtml(job.title)}</a>${company}`
+    : `<b>${index}.</b> ${escapeHtml(job.title)}${company}`;
 
   const tags = techTags(job, parsed, 4);
   const salary = parsed?.salary || job.salary;
@@ -101,14 +106,6 @@ export function formatDigest(items: string[], total: number): string {
   const header = `📋 <b>${total} new job${total === 1 ? "" : "s"} found</b>`;
   const footer = "\n\n<i>Tap a number to see details</i>";
   return header + "\n\n" + items.join("\n\n") + footer;
-}
-
-export function hasContent(parsed: ParsedJob): boolean {
-  return (
-    parsed.requirements.length > 0 ||
-    parsed.niceToHave.length > 0 ||
-    parsed.responsibilities.length > 0
-  );
 }
 
 function renderParsedDescription(parsed: ParsedJob, budget: number): string {
@@ -144,10 +141,11 @@ export function formatMessage(job: Job, parsed: ParsedJob | null): string {
   const tags = techTags(job, parsed, 5);
   const ago = timeAgo(job.publishedAt);
 
+  const titleUrl = isSafeUrl(job.url) ? escapeHtml(job.url) : "";
   const lines = [
-    `<a href="${escapeHtml(job.url)}"><b>${escapeHtml(job.title)}</b></a>`,
-    `@ ${companyHtml(job)}`,
-    `\n🌍 ${escapeHtml(job.location)}`,
+    titleUrl ? `<a href="${titleUrl}"><b>${escapeHtml(job.title)}</b></a>` : `<b>${escapeHtml(job.title)}</b>`,
+    job.company && `@ ${companyHtml(job)}`,
+    job.location && `\n🌍 ${escapeHtml(job.location)}`,
     level && `<b>Level:</b> ${escapeHtml(level)}`,
     salary && `<b>Salary:</b> ${escapeHtml(salary)}`,
     tags.length > 0 && `<b>Stack:</b> ${escapeHtml(tags.join(", "))}`,
@@ -155,22 +153,19 @@ export function formatMessage(job: Job, parsed: ParsedJob | null): string {
   const headerText = lines.filter(Boolean).join("\n");
   const footer = ago ? `\n\n⚡ Posted ${ago}` : "";
 
-  const descBudget = MAX_MESSAGE_LENGTH - headerText.length - footer.length - "\n\n".length;
+  const descBudget = DELIVERY.MAX_LENGTH - headerText.length - footer.length - "\n\n".length;
 
   let description = "";
   if (descBudget > 200) {
-    if (parsed && hasContent(parsed)) {
-      const rendered = renderParsedDescription(parsed, descBudget);
-      if (rendered) description = `\n\n${rendered}`;
-    } else if (job.description) {
-      const fallback = fallbackDescription(job.description, descBudget);
-      if (fallback) description = `\n\n${fallback}`;
-    }
+    const rendered = parsed && hasContent(parsed) ? renderParsedDescription(parsed, descBudget) : "";
+    const desc = rendered || (job.description ? fallbackDescription(job.description, descBudget) : "");
+    if (desc) description = `\n\n${desc}`;
   }
 
   const message = headerText + description + footer;
-  if (message.length > MAX_MESSAGE_LENGTH) {
-    return (headerText + footer).slice(0, MAX_MESSAGE_LENGTH);
+  if (message.length > DELIVERY.MAX_LENGTH) {
+    // Drop description to avoid cutting HTML tags
+    return (headerText + footer).substring(0, DELIVERY.MAX_LENGTH);
   }
   return message;
 }

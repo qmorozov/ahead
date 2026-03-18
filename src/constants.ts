@@ -1,0 +1,64 @@
+export const SCORING = {
+  THRESHOLD: 20,
+  TITLE_KEYWORD: 25,
+  TAG_KEYWORD: 15,
+  ROLE_MATCH: 15,
+  SENIORITY_MATCH: 10,
+  STRONG_STACK_FIT: 10,
+  TAG_OVERLAP_MAX: 30,
+  FRESHNESS_MAX: 5,
+  SALARY_MATCH: 5,
+  HIGH_QUALITY_SOURCE: 3,
+  COMPANY_SIZE: 3,
+} as const;
+
+export const PENALTY = {
+  NO_ROLE: -15,
+  OVERQUALIFIED: -20,
+  EXCLUDE_REQUIREMENT: -30,
+  EXCLUDE_NICE: -10,
+  EXCLUDE_DESC: -15,
+  STAFFING_AGENCY: -10,
+  LOW_QUALITY: -10,
+  FOREIGN_LANGUAGE: -15,
+  FOREIGN_TECH: -15,
+} as const;
+
+export const STACK = {
+  MIN_TAGS: 5,
+  COVERAGE_THRESHOLD: 0.35,
+  RECALL_THRESHOLD: 0.4,
+  COVERAGE_WEIGHT: 0.6,
+  RECALL_WEIGHT: 0.4,
+} as const;
+
+export const FRESHNESS = {
+  DECAY_HOURS: 48,
+} as const;
+
+export const HIGH_QUALITY_SOURCES = new Set(["Greenhouse", "Lever", "HN"]);
+
+export const POLLING = {
+  MAX_PER_COMPANY: 3,
+  SOURCE_CACHE_TTL_MS: 2 * 60 * 1000,
+  COMPANY_SIZE_MIN_JOBS: 10,
+} as const;
+
+export const LLM = {
+  PARSES_PER_HOUR: 300,
+  QUOTA_COOLDOWN_MS: 60 * 60 * 1000,
+  MAX_INPUT_CHARS: 2000,
+  CLASSIFY_BATCH_SIZE: 7,
+} as const;
+
+export const WIZARD = {
+  TTL_MS: 30 * 60 * 1000,
+  INPUT_TTL_MS: 10 * 60 * 1000,
+  MAX_ARRAY_ITEMS: 50,
+  MAX_ITEM_LENGTH: 100,
+} as const;
+
+export const DELIVERY = {
+  PAGE_SIZE: 7,
+  MAX_LENGTH: 4096,
+} as const;

@@ -1,4 +1,4 @@
-import { rssParser } from "../utils";
+import { rssParser } from "../lib/utils";
 import { Job } from "../types";
 
 const FEED_URL = "https://hnrss.org/whoishiring/jobs?count=100";

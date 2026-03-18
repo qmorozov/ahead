@@ -36,7 +36,7 @@ export function createDefaultSettings(chatId: string): UserSettings {
     jobTypes: [],
     minSalaryUsd: 0,
     checkIntervalMinutes: 30,
-    maxJobAgeDays: 7,
+    maxJobAgeDays: 2,
     paused: false,
     jobsSent: 0,
   };
@@ -46,26 +46,21 @@ export function isOnboarded(settings: UserSettings): boolean {
   return settings.keywords.length > 0 || settings.roles.length > 0;
 }
 
-const stmtGetSettings = db.prepare(`SELECT * FROM settings WHERE chat_id = ?`);
-const stmtUpsertSettings = db.prepare(`
-  INSERT INTO settings (chat_id, roles, keywords, exclude_keywords, locations, seniority, job_types, min_salary_usd, check_interval_minutes, max_job_age_days, paused, jobs_sent)
-  VALUES (@chat_id, @roles, @keywords, @exclude_keywords, @locations, @seniority, @job_types, @min_salary_usd, @check_interval_minutes, @max_job_age_days, @paused, 0)
-  ON CONFLICT(chat_id) DO UPDATE SET
-    roles = @roles,
-    keywords = @keywords,
-    exclude_keywords = @exclude_keywords,
-    locations = @locations,
-    seniority = @seniority,
-    job_types = @job_types,
-    min_salary_usd = @min_salary_usd,
-    check_interval_minutes = @check_interval_minutes,
-    max_job_age_days = @max_job_age_days,
-    paused = @paused
-`);
-const stmtAllSettings = db.prepare(`SELECT * FROM settings`);
-const stmtIncrementJobsSent = db.prepare(
-  `UPDATE settings SET jobs_sent = jobs_sent + ? WHERE chat_id = ?`,
-);
+const sql = {
+  get: db.prepare(`SELECT * FROM settings WHERE chat_id = ?`),
+  getAll: db.prepare(`SELECT * FROM settings`),
+  upsert: db.prepare(`
+    INSERT INTO settings (chat_id, roles, keywords, exclude_keywords, locations, seniority, job_types, min_salary_usd, check_interval_minutes, max_job_age_days, paused, jobs_sent)
+    VALUES (@chat_id, @roles, @keywords, @exclude_keywords, @locations, @seniority, @job_types, @min_salary_usd, @check_interval_minutes, @max_job_age_days, @paused, 0)
+    ON CONFLICT(chat_id) DO UPDATE SET
+      roles = @roles, keywords = @keywords, exclude_keywords = @exclude_keywords,
+      locations = @locations, seniority = @seniority, job_types = @job_types,
+      min_salary_usd = @min_salary_usd, check_interval_minutes = @check_interval_minutes,
+      max_job_age_days = @max_job_age_days, paused = @paused
+  `),
+  incrementJobsSent: db.prepare(`UPDATE settings SET jobs_sent = jobs_sent + ? WHERE chat_id = ?`),
+  pause: db.prepare(`UPDATE settings SET paused = 1 WHERE chat_id = ?`),
+};
 
 function rowToSettings(row: Record<string, unknown>): UserSettings {
   return {
@@ -85,12 +80,12 @@ function rowToSettings(row: Record<string, unknown>): UserSettings {
 }
 
 export function loadSettings(chatId: string): UserSettings | null {
-  const row = stmtGetSettings.get(chatId) as Record<string, unknown> | undefined;
+  const row = sql.get.get(chatId) as Record<string, unknown> | undefined;
   return row ? rowToSettings(row) : null;
 }
 
 export function saveSettings(settings: UserSettings): void {
-  stmtUpsertSettings.run({
+  sql.upsert.run({
     chat_id: settings.chatId,
     roles: JSON.stringify(settings.roles),
     keywords: JSON.stringify(settings.keywords),
@@ -106,10 +101,25 @@ export function saveSettings(settings: UserSettings): void {
 }
 
 export function loadAllSettings(): UserSettings[] {
-  const rows = stmtAllSettings.all() as Record<string, unknown>[];
-  return rows.map(rowToSettings);
+  return (sql.getAll.all() as Record<string, unknown>[]).map(rowToSettings);
 }
 
 export function incrementJobsSent(chatId: string, count: number): void {
-  stmtIncrementJobsSent.run(count, chatId);
+  sql.incrementJobsSent.run(count, chatId);
+}
+
+export function markUserBlocked(chatId: string): void {
+  sql.pause.run(chatId);
+}
+
+// Deletes all user data across tables in a single transaction
+const deleteUserDataTx = db.transaction((chatId: string) => {
+  db.prepare(`DELETE FROM seen_jobs WHERE chat_id = ?`).run(chatId);
+  db.prepare(`DELETE FROM seen_titles WHERE chat_id = ?`).run(chatId);
+  db.prepare(`DELETE FROM pending_jobs WHERE chat_id = ?`).run(chatId);
+  db.prepare(`DELETE FROM settings WHERE chat_id = ?`).run(chatId);
+});
+
+export function deleteUserData(chatId: string): void {
+  deleteUserDataTx(chatId);
 }

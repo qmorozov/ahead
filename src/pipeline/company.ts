@@ -1,11 +1,16 @@
 import axios from "axios";
-import { CLEARBIT_TIMEOUT } from "./config";
-import { getCachedCompanyUrl, setCachedCompanyUrl } from "./db";
-import { Job } from "./types";
+import { CLEARBIT_TIMEOUT } from "../config";
+import { getCachedCompanyUrl, setCachedCompanyUrl } from "../db";
+import { Job } from "../types";
 
 const CLEARBIT_URL = "https://autocomplete.clearbit.com/v1/companies/suggest";
 
-async function lookupCompanyUrl(name: string): Promise<string | null> {
+interface LookupResult {
+  url: string | null;
+  transientError: boolean;
+}
+
+async function lookupCompanyUrl(name: string): Promise<LookupResult> {
   try {
     const { data } = await axios.get(CLEARBIT_URL, {
       params: { query: name },
@@ -14,12 +19,12 @@ async function lookupCompanyUrl(name: string): Promise<string | null> {
     if (Array.isArray(data) && data.length > 0) {
       const domain = data[0]?.domain;
       if (typeof domain === "string" && domain) {
-        return `https://${domain}`;
+        return { url: `https://${domain}`, transientError: false };
       }
     }
-    return null;
+    return { url: null, transientError: false }; // genuinely not found
   } catch {
-    return null;
+    return { url: null, transientError: true }; // network/timeout — don't cache
   }
 }
 
@@ -28,8 +33,8 @@ async function resolveCompanyUrl(name: string): Promise<string | null> {
   const cached = getCachedCompanyUrl(key);
   if (cached !== undefined) return cached;
 
-  const url = await lookupCompanyUrl(name);
-  setCachedCompanyUrl(key, url);
+  const { url, transientError } = await lookupCompanyUrl(name);
+  if (!transientError) setCachedCompanyUrl(key, url); // only cache definitive results
   return url;
 }
 

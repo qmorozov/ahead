@@ -1,11 +1,18 @@
 import Parser from "rss-parser";
-import { HTTP_TIMEOUT } from "./config";
-import { KNOWN_TECHS } from "./techs";
+import { decodeHTML } from "entities";
+import { HTTP_TIMEOUT } from "../config";
+import { ALL_KNOWN_TECHS } from "./tech-data";
 
 export const rssParser = new Parser({ timeout: HTTP_TIMEOUT });
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null) return JSON.stringify(error);
+  return String(error);
 }
 
 export const SENIORITY_LEVELS = [
@@ -21,7 +28,7 @@ export const SENIORITY_LEVELS = [
 export const SENIORITY_PATTERNS: [string, RegExp][] = [
   ["Intern", /\bintern(?:ship)?\b/i],
   ["Junior", /\b(?:junior|jr\.?|jnr)\b/i],
-  ["Middle", /\b(?:middle|mid[- ]?level|mid)\b/i],
+  ["Middle", /\b(?:middle|mid[- ]?level)\b/i],
   ["Senior", /\b(?:senior|sr\.?|snr)\b/i],
   ["Staff", /\b(?:staff|principal)\b/i],
   ["Lead", /\b(?:lead|team lead)\b/i],
@@ -31,15 +38,44 @@ export const SENIORITY_PATTERNS: [string, RegExp][] = [
 export const JOB_TYPE_PRESETS = ["Full-time", "Part-time", "Contract", "Freelance", "Internship"];
 
 const JOB_TYPE_MAP: Record<string, string> = {
-  full_time: "full-time", "full-time": "full-time", fulltime: "full-time",
-  part_time: "part-time", "part-time": "part-time", parttime: "part-time",
-  contract: "contract", contractor: "contract",
+  full_time: "full-time",
+  "full-time": "full-time",
+  fulltime: "full-time",
+  part_time: "part-time",
+  "part-time": "part-time",
+  parttime: "part-time",
+  contract: "contract",
+  contractor: "contract",
   freelance: "freelance",
-  internship: "internship", intern: "internship",
+  internship: "internship",
+  intern: "internship",
 };
 
 export function normalizeJobType(raw: string): string | undefined {
   return JOB_TYPE_MAP[raw.toLowerCase().replace(/[\s-]+/g, "_")] ?? JOB_TYPE_MAP[raw.toLowerCase()];
+}
+
+export const SENIORITY_ORDER = SENIORITY_LEVELS.map((s) => s.toLowerCase());
+
+const SENIORITY_ALIASES: Record<string, string> = {
+  "mid-level": "Middle",
+  midlevel: "Middle",
+  "mid level": "Middle",
+  intermediate: "Middle",
+  "entry level": "Junior",
+  "entry-level": "Junior",
+  associate: "Junior",
+  principal: "Staff",
+  sr: "Senior",
+  "sr.": "Senior",
+};
+
+export function normalizeSeniority(raw: string | null): string | null {
+  if (!raw) return null;
+  const lower = raw.toLowerCase().trim();
+  if (SENIORITY_ALIASES[lower]) return SENIORITY_ALIASES[lower]!;
+  const idx = SENIORITY_ORDER.indexOf(lower);
+  return idx >= 0 ? SENIORITY_LEVELS[idx]! : null;
 }
 
 export function detectSeniority(title: string): string | null {
@@ -57,6 +93,9 @@ const TITLE_NORMALIZATIONS: [RegExp, string][] = [
   [/\bdev\b/gi, "developer"],
   [/\beng\b/gi, "engineer"],
   [/\bmgr\b/gi, "manager"],
+  [/\bc\+\+\b/gi, "cplusplus"],
+  [/\bc#\b/gi, "csharp"],
+  [/\.net\b/gi, "dotnet"],
 ];
 
 const COMPANY_STRIP = /\b(inc|llc|ltd|corp|co|gmbh|ag|plc|s\.?a\.?|b\.?v\.?)\b\.?/gi;
@@ -72,6 +111,7 @@ export function normalizeForDedup(title: string, company: string): string {
     .toLowerCase()
     .trim()
     .replace(COMPANY_STRIP, "")
+    .replace(/[-_]/g, " ")
     .replace(/[^a-z0-9\s]/g, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -90,13 +130,11 @@ function editDistance(a: string, b: string): number {
   return prev[b.length]!;
 }
 
-const techSet = new Set(KNOWN_TECHS);
-
 function correctTech(input: string): string {
-  if (techSet.has(input)) return input;
+  if (ALL_KNOWN_TECHS.has(input)) return input;
   let best = input;
   let bestDist = 3;
-  for (const tech of KNOWN_TECHS) {
+  for (const tech of ALL_KNOWN_TECHS) {
     if (Math.abs(input.length - tech.length) > 2) continue;
     const d = editDistance(input, tech);
     if (d < bestDist) {
@@ -136,24 +174,25 @@ export function extractSalaryUsd(
 
   if (nums.length === 0) return undefined;
   const isHourly = hasHourlyMarker || nums.every((n) => n < 500);
-  const multiplier = isHourly ? 2080 : hasMonthlyMarker ? 12 : 1;
+
+  let multiplier = 1;
+  if (isHourly) multiplier = 2080;
+  else if (hasMonthlyMarker) multiplier = 12;
+
   return { min: Math.min(...nums) * multiplier, max: Math.max(...nums) * multiplier };
 }
 
 export function stripHtml(html: string): string {
-  return html
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#039;/g, "'")
-    .replace(/&apos;/g, "'")
-    .replace(/&#x27;/g, "'")
-    .replace(/&ndash;/g, "–")
-    .replace(/&mdash;/g, "—")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&#\d+;/g, (m) => String.fromCharCode(parseInt(m.slice(2, -1))))
+  return decodeHTML(html.replace(/<[^>]+>/g, " "))
     .replace(/\s+/g, " ")
     .trim();
+}
+
+export function formatSalaryRange(
+  min?: number | null,
+  max?: number | null,
+  currency = "USD",
+): string | undefined {
+  if (min == null || max == null) return undefined;
+  return `${currency} ${min.toLocaleString()} – ${max.toLocaleString()}`;
 }
