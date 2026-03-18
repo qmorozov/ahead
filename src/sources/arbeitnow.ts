@@ -2,7 +2,7 @@ import axios from "axios";
 import { z } from "zod";
 import { HTTP_TIMEOUT } from "../config";
 import { Job } from "../types";
-import { normalizeJobType } from "../utils";
+import { normalizeJobType } from "../lib/utils";
 
 const JobSchema = z.object({
   slug: z.string().default(""),

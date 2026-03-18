@@ -1,12 +1,12 @@
 import { Composer, GrammyError, InlineKeyboard, Keyboard } from "grammy";
 import type { Context } from "grammy";
-import { createDefaultSettings, isOnboarded, UserSettings, loadSettings, saveSettings } from "./db";
+import { createDefaultSettings, isOnboarded, UserSettings, loadSettings, saveSettings, deleteUserData } from "../db";
 import { getStoredJob, sendJob } from "./delivery";
-import { getPollStats } from "./polling";
+import { getPollStats, clearUserState } from "../pipeline/polling";
 import { formatSettings } from "./format";
-import { logError } from "./logger";
-import { ROLE_TECHS } from "./filter";
-import { SENIORITY_LEVELS, JOB_TYPE_PRESETS, parseCommaSeparated } from "./utils";
+import { logError } from "../lib/logger";
+import { SENIORITY_LEVELS, JOB_TYPE_PRESETS, parseCommaSeparated } from "../lib/utils";
+import { WIZARD } from "../constants";
 
 type WizardStep = "welcome" | "roles" | "technologies" | "seniority" | "salary" | "locations";
 
@@ -115,18 +115,14 @@ const WIZ_TOGGLE: Record<string, ToggleField> = {
 };
 
 const wizardSessions = new Map<string, WizardSession>();
-const WIZARD_TTL_MS = 30 * 60 * 1000;
-const INPUT_TTL_MS = 10 * 60 * 1000;
-const MAX_ARRAY_ITEMS = 50;
-const MAX_ITEM_LENGTH = 100;
 
 function sweepStale(): void {
   const now = Date.now();
   for (const [id, s] of wizardSessions) {
-    if (now - s.createdAt > WIZARD_TTL_MS) wizardSessions.delete(id);
+    if (now - s.createdAt > WIZARD.TTL_MS) wizardSessions.delete(id);
   }
   for (const [id, e] of waitingForInput) {
-    if (now - e.createdAt > INPUT_TTL_MS) waitingForInput.delete(id);
+    if (now - e.createdAt > WIZARD.INPUT_TTL_MS) waitingForInput.delete(id);
   }
 }
 
@@ -220,11 +216,11 @@ async function renderWizardStep(ctx: Context, session: WizardSession): Promise<v
 async function finishWizard(ctx: Context, session: WizardSession): Promise<void> {
   const chatId = session.chatId;
   const s = loadSettings(chatId) ?? createDefaultSettings(chatId);
-  s.roles = [...session.roles].slice(0, MAX_ARRAY_ITEMS);
-  s.keywords = [...session.technologies].slice(0, MAX_ARRAY_ITEMS);
-  s.seniority = [...session.seniority].slice(0, MAX_ARRAY_ITEMS);
+  s.roles = [...session.roles].slice(0, WIZARD.MAX_ARRAY_ITEMS);
+  s.keywords = [...session.technologies].slice(0, WIZARD.MAX_ARRAY_ITEMS);
+  s.seniority = [...session.seniority].slice(0, WIZARD.MAX_ARRAY_ITEMS);
   s.minSalaryUsd = session.minSalaryUsd;
-  s.locations = [...session.locations].filter((l) => l !== "anywhere").slice(0, MAX_ARRAY_ITEMS);
+  s.locations = [...session.locations].filter((l) => l !== "anywhere").slice(0, WIZARD.MAX_ARRAY_ITEMS);
   saveSettings(s);
 
   try {
@@ -319,23 +315,18 @@ function arrayKb(key: ArraySettingKey, items: string[]): InlineKeyboard {
   return kb.text("\u2190 Back", "set:back");
 }
 
-function senioritySettingsKb(selected: string[]): InlineKeyboard {
-  const set = new Set(selected.map((s) => s.toLowerCase()));
+function toggleSettingsKb(
+  presets: string[],
+  selected: string[],
+  prefix: string,
+  caseSensitive = true,
+): InlineKeyboard {
+  const set = new Set(caseSensitive ? selected : selected.map((s) => s.toLowerCase()));
+  const isSelected = (item: string) => set.has(caseSensitive ? item : item.toLowerCase());
   const kb = new InlineKeyboard();
-  for (let i = 0; i < SENIORITY_LEVELS.length; i += 3) {
-    for (const item of SENIORITY_LEVELS.slice(i, i + 3))
-      kb.text(set.has(item.toLowerCase()) ? `\u2705 ${item}` : item, `set:sen:${item}`);
-    kb.row();
-  }
-  return kb.text("\u2190 Back", "set:back");
-}
-
-function rolesSettingsKb(selected: string[]): InlineKeyboard {
-  const set = new Set(selected);
-  const kb = new InlineKeyboard();
-  for (let i = 0; i < ROLE_PRESETS.length; i += 3) {
-    for (const r of ROLE_PRESETS.slice(i, i + 3))
-      kb.text(set.has(r) ? `\u2705 ${r}` : r, `set:role:${r}`);
+  for (let i = 0; i < presets.length; i += 3) {
+    for (const item of presets.slice(i, i + 3))
+      kb.text(isSelected(item) ? `\u2705 ${item}` : item, `set:${prefix}:${item}`);
     kb.row();
   }
   return kb.text("\u2190 Back", "set:back");
@@ -347,17 +338,6 @@ function salarySettingsKb(current: number): InlineKeyboard {
   for (let i = 0; i < presets.length; i += 3) {
     for (const p of presets.slice(i, i + 3))
       kb.text(current === p.value ? `\u2705 ${p.label}` : p.label, `set:sal:${p.value}`);
-    kb.row();
-  }
-  return kb.text("\u2190 Back", "set:back");
-}
-
-function jobTypeSettingsKb(selected: string[]): InlineKeyboard {
-  const set = new Set(selected);
-  const kb = new InlineKeyboard();
-  for (let i = 0; i < JOB_TYPE_PRESETS.length; i += 3) {
-    for (const item of JOB_TYPE_PRESETS.slice(i, i + 3))
-      kb.text(set.has(item.toLowerCase()) ? `\u2705 ${item}` : item, `set:jtype:${item}`);
     kb.row();
   }
   return kb.text("\u2190 Back", "set:back");
@@ -482,6 +462,20 @@ handlers.command("start", async (ctx) => {
     minSalaryUsd: 0,
     locations: new Set(),
   });
+});
+
+handlers.command("delete", async (ctx) => {
+  const chatId = String(ctx.chat.id);
+  const s = loadSettings(chatId);
+  if (!s) {
+    await ctx.reply("No data to delete.");
+    return;
+  }
+  deleteUserData(chatId);
+  clearUserState(chatId);
+  wizardSessions.delete(chatId);
+  waitingForInput.delete(chatId);
+  await ctx.reply("All your data has been deleted. Send /start to set up again.");
 });
 
 handlers.command("settings", async (ctx) => {
@@ -634,48 +628,24 @@ handlers.callbackQuery(/^set:/, async (ctx) => {
     return;
   }
 
-  if (data.startsWith("set:role:")) {
-    const role = data.slice(9);
-    const s = loadSettings(chatId);
-    if (!s) {
-      await ctx.answerCallbackQuery("Run /start first.");
-      return;
-    }
-    const idx = s.roles.indexOf(role);
-    if (idx >= 0) s.roles.splice(idx, 1);
-    else s.roles.push(role);
-    saveSettings(s);
-    await ctx.answerCallbackQuery();
-    showToggleEditor(ctx, chatId, "Roles", s.roles, rolesSettingsKb(s.roles), msgId);
-    return;
-  }
+  const toggleConfigs: Record<string, { prefix: string; field: keyof Pick<UserSettings, "roles" | "seniority" | "jobTypes">; label: string; presets: string[]; caseSensitive: boolean }> = {
+    "set:role:": { prefix: "set:role:", field: "roles", label: "Roles", presets: ROLE_PRESETS, caseSensitive: true },
+    "set:sen:": { prefix: "set:sen:", field: "seniority", label: "Seniority", presets: [...SENIORITY_LEVELS], caseSensitive: false },
+    "set:jtype:": { prefix: "set:jtype:", field: "jobTypes", label: "Job Type", presets: JOB_TYPE_PRESETS, caseSensitive: false },
+  };
 
-  if (data.startsWith("set:sen:")) {
-    const level = data.slice(8);
-    const s = loadSettings(chatId);
-    if (!s) {
-      await ctx.answerCallbackQuery("Run /start first.");
-      return;
-    }
-    const idx = s.seniority.findIndex((x) => x.toLowerCase() === level.toLowerCase());
-    if (idx >= 0) s.seniority.splice(idx, 1);
-    else s.seniority.push(level);
-    saveSettings(s);
-    await ctx.answerCallbackQuery();
-    showToggleEditor(ctx, chatId, "Seniority", s.seniority, senioritySettingsKb(s.seniority), msgId);
-    return;
-  }
-
-  if (data.startsWith("set:jtype:")) {
-    const type = data.slice(10).toLowerCase();
+  for (const [pfx, cfg] of Object.entries(toggleConfigs)) {
+    if (!data.startsWith(pfx)) continue;
+    const value = cfg.caseSensitive ? data.slice(pfx.length) : data.slice(pfx.length).toLowerCase();
     const s = loadSettings(chatId);
     if (!s) { await ctx.answerCallbackQuery("Run /start first."); return; }
-    const idx = s.jobTypes.indexOf(type);
-    if (idx >= 0) s.jobTypes.splice(idx, 1);
-    else s.jobTypes.push(type);
+    const arr = s[cfg.field];
+    const idx = arr.findIndex((x) => (cfg.caseSensitive ? x : x.toLowerCase()) === value);
+    if (idx >= 0) arr.splice(idx, 1);
+    else arr.push(cfg.caseSensitive ? value : data.slice(pfx.length));
     saveSettings(s);
     await ctx.answerCallbackQuery();
-    showToggleEditor(ctx, chatId, "Job Type", s.jobTypes, jobTypeSettingsKb(s.jobTypes), msgId);
+    showToggleEditor(ctx, chatId, cfg.label, arr, toggleSettingsKb(cfg.presets, arr, pfx.slice(4, -1), cfg.caseSensitive), msgId);
     return;
   }
 
@@ -720,25 +690,12 @@ handlers.callbackQuery(/^set:/, async (ctx) => {
   }
   await ctx.answerCallbackQuery();
 
-  if (key === "roles") {
-    showToggleEditor(ctx, chatId, "Roles", s.roles, rolesSettingsKb(s.roles), msgId);
-    return;
-  }
-  if (key === "seniority") {
-    showToggleEditor(
-      ctx,
-      chatId,
-      "Seniority",
-      s.seniority,
-      senioritySettingsKb(s.seniority),
-      msgId,
-    );
-    return;
-  }
-  if (key === "jobTypes") {
-    showToggleEditor(ctx, chatId, "Job Type", s.jobTypes, jobTypeSettingsKb(s.jobTypes), msgId);
-    return;
-  }
+  const editorMap: Record<string, () => void> = {
+    roles: () => showToggleEditor(ctx, chatId, "Roles", s.roles, toggleSettingsKb(ROLE_PRESETS, s.roles, "role"), msgId),
+    seniority: () => showToggleEditor(ctx, chatId, "Seniority", s.seniority, toggleSettingsKb([...SENIORITY_LEVELS], s.seniority, "sen", false), msgId),
+    jobTypes: () => showToggleEditor(ctx, chatId, "Job Type", s.jobTypes, toggleSettingsKb(JOB_TYPE_PRESETS, s.jobTypes, "jtype", false), msgId),
+  };
+  if (editorMap[key]) { editorMap[key](); return; }
   if (key === "minSalaryUsd") {
     showSalaryEditor(ctx, chatId, s, msgId);
     return;
@@ -781,11 +738,11 @@ handlers.on("message:text", async (ctx) => {
     if (session.step !== "roles" && session.step !== "technologies" && session.step !== "locations")
       return;
     const field: ToggleField = session.step;
-    const items = parseCommaSeparated(text).filter((i) => i.length <= MAX_ITEM_LENGTH);
+    const items = parseCommaSeparated(text).filter((i) => i.length <= WIZARD.MAX_ITEM_LENGTH);
     if (items.length === 0) return;
     const set = session[field];
     for (const item of items) {
-      if (set.size >= MAX_ARRAY_ITEMS) break;
+      if (set.size >= WIZARD.MAX_ARRAY_ITEMS) break;
       set.add(item);
     }
     await ctx.deleteMessage().catch(() => {});
@@ -813,9 +770,9 @@ handlers.on("message:text", async (ctx) => {
     showSettings(ctx, chatId, s, pending.messageId);
     if (pending.key === "checkIntervalMinutes" && onIntervalChanged) onIntervalChanged();
   } else if (isArrayKey(pending.key)) {
-    const newItems = parseCommaSeparated(text).filter((i) => i.length <= MAX_ITEM_LENGTH);
+    const newItems = parseCommaSeparated(text).filter((i) => i.length <= WIZARD.MAX_ITEM_LENGTH);
     const merged = new Set([...s[pending.key], ...newItems]);
-    s[pending.key] = [...merged].slice(0, MAX_ARRAY_ITEMS);
+    s[pending.key] = [...merged].slice(0, WIZARD.MAX_ARRAY_ITEMS);
     saveSettings(s);
     showArrayEditor(ctx, chatId, pending.key, s, pending.messageId);
   }

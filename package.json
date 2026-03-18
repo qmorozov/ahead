@@ -10,15 +10,20 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
     "format": "prettier --write src/",
-    "format:check": "prettier --check src/"
+    "format:check": "prettier --check src/",
+    "seed-boards": "tsx scripts/seed-boards.ts",
+    "build-tech-data": "tsx scripts/build-tech-data.ts"
   },
   "keywords": [],
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@grammyjs/auto-retry": "^2.0.2",
     "axios": "^1.13.6",
     "better-sqlite3": "^12.6.2",
     "dotenv": "^17.3.1",
+    "entities": "^8.0.0",
+    "franc-min": "^6.2.0",
     "grammy": "^1.41.1",
     "groq-sdk": "^1.1.1",
     "node-cron": "^4.2.1",

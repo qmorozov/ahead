@@ -1,6 +1,13 @@
+/**
+ * Error strategy:
+ * - Operational errors (timeout, 429, DNS) → retry with backoff, serve stale data, disable source temporarily
+ * - Persistent failures (3+ consecutive) → disable source for 30min, serve stale if <1h old
+ * - Degraded state (source down) → other sources continue, users still get results
+ */
 import pRetry from "p-retry";
 import { Job } from "../types";
-import { log, logError } from "../logger";
+import { log, logError } from "../lib/logger";
+import { errorMessage } from "../lib/utils";
 import { fetchRemoteOK } from "./remoteok";
 import { fetchRemotive } from "./remotive";
 import { fetchJobicy } from "./jobicy";
@@ -13,6 +20,8 @@ import { fetchWorkingNomads } from "./workingnomads";
 import { fetchRemoteFirstJobs } from "./remotefirstjobs";
 import { fetchHN } from "./hn";
 import { fetchAdzuna } from "./adzuna";
+import { fetchGreenhouse } from "./greenhouse";
+import { fetchLever } from "./lever";
 
 interface Source {
   name: string;
@@ -32,10 +41,16 @@ export const sources: Source[] = [
   { name: "RemoteFirstJobs", fetch: fetchRemoteFirstJobs },
   { name: "HN", fetch: fetchHN },
   { name: "Adzuna", fetch: fetchAdzuna },
+  { name: "Greenhouse", fetch: fetchGreenhouse },
+  { name: "Lever", fetch: fetchLever },
 ];
 
 const disabledUntil = new Map<string, number>();
-const DISABLE_FOR_MS = 15 * 60 * 1000;
+const consecutiveFailures = new Map<string, number>();
+const lastGoodResults = new Map<string, { jobs: Job[]; fetchedAt: number }>();
+const DISABLE_TRANSIENT_MS = 3 * 60 * 1000;
+const DISABLE_PERMANENT_MS = 30 * 60 * 1000;
+const STALE_TTL_MS = 60 * 60 * 1000; // serve stale results up to 1h
 
 function isSourceDisabled(name: string): boolean {
   const until = disabledUntil.get(name);
@@ -47,6 +62,10 @@ function isSourceDisabled(name: string): boolean {
   return true;
 }
 
+function isTransientError(error: unknown): boolean {
+  return /timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED|429|503|fetch failed/i.test(errorMessage(error));
+}
+
 export async function fetchWithRetry(source: Source): Promise<Job[]> {
   if (isSourceDisabled(source.name)) return [];
 
@@ -54,16 +73,31 @@ export async function fetchWithRetry(source: Source): Promise<Job[]> {
     const jobs = await pRetry(() => source.fetch(), {
       retries: 3,
       minTimeout: 2000,
+      maxTimeout: 10_000,
       onFailedAttempt: (error) => {
         log(`${source.name} attempt ${error.attemptNumber}/3 failed (${error.retriesLeft} left)`);
       },
     });
+    consecutiveFailures.delete(source.name);
     disabledUntil.delete(source.name);
+    if (jobs.length > 0) lastGoodResults.set(source.name, { jobs, fetchedAt: Date.now() });
     return jobs;
   } catch (error) {
     logError(source.name, error);
-    disabledUntil.set(source.name, Date.now() + DISABLE_FOR_MS);
-    log(`${source.name} disabled for 15min`);
+    const failures = (consecutiveFailures.get(source.name) ?? 0) + 1;
+    consecutiveFailures.set(source.name, failures);
+
+    const disableMs = failures >= 3 ? DISABLE_PERMANENT_MS : (isTransientError(error) ? DISABLE_TRANSIENT_MS : DISABLE_PERMANENT_MS);
+    disabledUntil.set(source.name, Date.now() + disableMs);
+
+    // Serve stale results if available and fresh enough
+    const stale = lastGoodResults.get(source.name);
+    if (stale && Date.now() - stale.fetchedAt < STALE_TTL_MS) {
+      log(`${source.name} failed, serving ${stale.jobs.length} stale jobs (failure #${failures})`);
+      return stale.jobs;
+    }
+
+    log(`${source.name} disabled for ${Math.round(disableMs / 60_000)}min (failure #${failures})`);
     return [];
   }
 }
