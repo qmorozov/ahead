@@ -22,6 +22,7 @@ export interface ScoringContext {
   roles: string[];
   minSalaryUsd: number;
   userNonGenericCount: number;
+  workArrangement: string[];
 }
 
 export interface ScorerResult {
@@ -70,6 +71,7 @@ export function buildScoringContext(settings: UserSettings): ScoringContext {
     roles: settings.roles,
     minSalaryUsd: settings.minSalaryUsd,
     userNonGenericCount: settings.keywords.filter((kw) => !GENERIC_TOOLS.has(normalizeTag(kw))).length,
+    workArrangement: settings.workArrangement,
   };
 }
 
@@ -105,6 +107,14 @@ const scorers: Array<[string, Scorer]> = [
   ["excludeKeywords", scoreExcludeKeywords],
   ["jobQuality", scoreJobQuality],
 ];
+
+export function computeThreshold(ctx: ScoringContext): number {
+  let t = SCORING.THRESHOLD; // base: 20
+  if (ctx.expandedKeywords.length > 10) t += 5;
+  if (ctx.roles.length > 0) t += 3;
+  if (ctx.senioritySet.size > 0) t += 2;
+  return t;
+}
 
 export function scoreJob(job: Job, parsed: ParsedJob | null, ctx: ScoringContext): ScoreResult {
   const analysis = analyzeJob(job, parsed);

@@ -1,7 +1,7 @@
 import { sources, fetchWithRetry } from "../sources";
-import { filterJobs, buildScoringContext, scoreJob, ScoringContext } from "./filter";
+import { filterJobs, buildScoringContext, scoreJob, computeThreshold, ScoringContext } from "./filter";
 import { sendJob, sendJobs } from "../bot/delivery";
-import { SCORING, POLLING, LLM } from "../constants";
+import { POLLING, LLM } from "../constants";
 import {
   isOnboarded,
   UserSettings,
@@ -16,6 +16,11 @@ import {
   loadSeenTitles,
   markTitleSeen,
   pruneSeenTitles,
+  loadDeferredJobs,
+  upsertDeferred,
+  deleteDeferred,
+  pruneDeferredDb,
+  deleteDeferredByChat,
 } from "../db";
 import { log, debug, logError } from "../lib/logger";
 import { Job, ParsedJob, jobKey } from "../types";
@@ -56,21 +61,31 @@ export function clearUserState(chatId: string): void {
   for (const key of deferredCount.keys()) {
     if (key.startsWith(`${chatId}::`)) deferredCount.delete(key);
   }
+  deleteDeferredByChat(chatId);
 }
 
 let cachedJobs: Map<string, Job[]> | null = null;
 let cachedAt = 0;
 
 const lastPolledAt = new Map<string, number>();
-const deferredCount = new Map<string, { cycles: number; updatedAt: number }>(); // chatId::jobKey -> state
+let deferredCount = new Map<string, { cycles: number; updatedAt: number }>(); // chatId::jobKey -> state
+let deferredLoaded = false;
 const MAX_DEFER_CYCLES = 3;
 const DEFER_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+
+function ensureDeferredLoaded(): void {
+  if (deferredLoaded) return;
+  const cutoff = Date.now() - DEFER_TTL_MS;
+  deferredCount = loadDeferredJobs(cutoff);
+  deferredLoaded = true;
+}
 
 function pruneDeferredCount(): void {
   const cutoff = Date.now() - DEFER_TTL_MS;
   for (const [key, entry] of deferredCount) {
     if (entry.updatedAt < cutoff) deferredCount.delete(key);
   }
+  pruneDeferredDb(cutoff);
 }
 
 async function fetchAllSources(): Promise<Map<string, Job[]>> {
@@ -187,7 +202,7 @@ function classifyByRelevance(
     const result = scoreJob(entry.job, parsed, ctx);
     scores.set(entry.key, result.score);
     signalsMap.set(entry.key, result.signals);
-    const pass = result.score >= SCORING.THRESHOLD;
+    const pass = result.score >= computeThreshold(ctx);
     debug(`score ${result.score} (${result.normalized}%) ${pass ? "PASS" : "FAIL"} "${entry.job.title}" [${result.signals.join(", ")}]`);
     (pass ? relevant : irrelevant).push(entry);
   }
@@ -226,6 +241,7 @@ function classifyIrrelevant(
     if (wasParsed) {
       ready.push(nj);
       deferredCount.delete(deferKey);
+      deleteDeferred(chatId, nj.key);
       continue;
     }
 
@@ -234,8 +250,11 @@ function classifyIrrelevant(
     if (cycles >= MAX_DEFER_CYCLES) {
       ready.push(nj);
       deferredCount.delete(deferKey);
+      deleteDeferred(chatId, nj.key);
     } else {
-      deferredCount.set(deferKey, { cycles, updatedAt: Date.now() });
+      const now = Date.now();
+      deferredCount.set(deferKey, { cycles, updatedAt: now });
+      upsertDeferred(chatId, nj.key, cycles, now);
     }
   }
   return { markSeen: ready, deferredTotal: irrelevant.length - ready.length };
@@ -339,12 +358,15 @@ async function processForUser(
     ["Role", sanitize(settings.roles.join(", "))],
     ["Tech", sanitize(settings.keywords.slice(0, 10).join(", "))],
     ["Level", sanitize(settings.seniority.join(", "))],
-    ["Exclude", sanitize(settings.excludeKeywords.join(", "))],
   ];
-  const profile = profileParts
+  let profile = profileParts
     .filter(([, value]) => value.length > 0)
     .map(([label, value]) => `${label}: ${value}`)
     .join(". ");
+
+  if (settings.excludeKeywords.length > 0) {
+    profile += `. Exclude these technologies (not relevant): ${sanitize(settings.excludeKeywords.join(", "))}`;
+  }
 
   const classifyInput = allNew.map((nj, i) => ({
     index: i,
@@ -437,6 +459,7 @@ export async function pollAllUsers(): Promise<void> {
   polling = true;
 
   try {
+    ensureDeferredLoaded();
     const allSettings = loadAllSettings();
     const active = allSettings.filter((s) => isOnboarded(s));
 

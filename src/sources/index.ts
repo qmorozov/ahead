@@ -8,6 +8,7 @@ import pRetry from "p-retry";
 import { Job } from "../types";
 import { log, logError } from "../lib/logger";
 import { errorMessage } from "../lib/utils";
+import { recordSourceSuccess, recordSourceFailure, getSourceHealth } from "../db";
 import { fetchRemoteOK } from "./remoteok";
 import { fetchRemotive } from "./remotive";
 import { fetchJobicy } from "./jobicy";
@@ -81,11 +82,17 @@ export async function fetchWithRetry(source: Source): Promise<Job[]> {
     consecutiveFailures.delete(source.name);
     disabledUntil.delete(source.name);
     if (jobs.length > 0) lastGoodResults.set(source.name, { jobs, fetchedAt: Date.now() });
+    recordSourceSuccess(source.name, jobs.length);
     return jobs;
   } catch (error) {
     logError(source.name, error);
     const failures = (consecutiveFailures.get(source.name) ?? 0) + 1;
     consecutiveFailures.set(source.name, failures);
+    recordSourceFailure(source.name);
+    const health = getSourceHealth(source.name);
+    if (health && health.fail_streak >= 3) {
+      log(`Source ${source.name} has failed ${health.fail_streak} times in a row`);
+    }
 
     const disableMs = failures >= 3 ? DISABLE_PERMANENT_MS : (isTransientError(error) ? DISABLE_TRANSIENT_MS : DISABLE_PERMANENT_MS);
     disabledUntil.set(source.name, Date.now() + disableMs);

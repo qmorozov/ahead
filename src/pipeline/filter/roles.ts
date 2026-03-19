@@ -7,6 +7,11 @@ interface RoleConfig {
   domains: string[];
 }
 
+// Generic "Software Engineer/Developer" pattern — matches any dev role the user selected.
+// Used as a fallback so these titles don't get a NO_ROLE penalty.
+export const GENERIC_DEV_PATTERN =
+  /^(?!.*(?:front|back|full.?stack|mobile|ios|android|data|ml|ai|devops|sre|infra|platform|cloud|design|product|qa|quality|test|sdet)).*\b(?:software|web)\s*(?:engineer|developer|architect)\b/i;
+
 export const ROLE_CONFIGS: Record<string, RoleConfig> = {
   frontend: {
     titlePattern: /front.?end|UI\s*(developer|engineer)|web\s*developer/i,

@@ -22,6 +22,8 @@ export const PENALTY = {
   LOW_QUALITY: -10,
   FOREIGN_LANGUAGE: -15,
   FOREIGN_TECH: -15,
+  RELOCATION: -15,
+  ARRANGEMENT_MISMATCH: -20,
 } as const;
 
 export const STACK = {

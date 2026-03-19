@@ -78,9 +78,6 @@ bot.api
   .setMyCommands([
     { command: "start", description: "Set up your preferences" },
     { command: "settings", description: "Edit filters" },
-    { command: "status", description: "See recent activity" },
-    { command: "delete", description: "Delete all your data" },
-    { command: "cancel", description: "Cancel current action" },
   ])
   .catch((e) => logError("setMyCommands", e));
 

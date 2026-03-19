@@ -86,6 +86,8 @@ const EMPTY_PARSED: ParsedJob = {
   seniority: null,
   salary: null,
   primaryTags: [],
+  workArrangement: null,
+  locationRestriction: null,
 };
 
 function postProcess(data: z.infer<typeof ParsedJobSchema>): ParsedJob {
@@ -97,6 +99,17 @@ function postProcess(data: z.infer<typeof ParsedJobSchema>): ParsedJob {
     responsibilities: data.responsibilities.slice(0, 5),
     primaryTags: data.primaryTags.slice(0, 8).map((t) => t.toLowerCase()),
   };
+}
+
+function humanizeZodError(issues: z.ZodIssue[]): string {
+  return issues.map((issue) => {
+    const field = String(issue.path[0] ?? "field");
+    if (issue.code === "invalid_value" && "values" in issue) {
+      const vals = (issue as { values: unknown[] }).values;
+      return `"${field}" must be one of: ${vals.join(", ")}`;
+    }
+    return `"${field}": ${issue.message}`;
+  }).join("; ");
 }
 
 function tryParseLLMOutput(raw: string | null | undefined): {
@@ -118,7 +131,7 @@ function tryParseLLMOutput(raw: string | null | undefined): {
 
   const result = ParsedJobSchema.safeParse(json);
   if (!result.success) {
-    const error = result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
+    const error = humanizeZodError(result.error.issues);
     debug(`LLM output: validation failed: ${error.slice(0, 200)}`);
     return { parsed: null, error };
   }
@@ -152,9 +165,16 @@ export async function classifyBatch(
   if (providers.length === 0) return new Set(jobs.map((j) => j.index));
 
   const relevant = new Set<number>();
+  let consecutiveFailures = 0;
 
   for (let i = 0; i < jobs.length; i += LLM.CLASSIFY_BATCH_SIZE) {
     const batch = jobs.slice(i, i + LLM.CLASSIFY_BATCH_SIZE);
+
+    if (consecutiveFailures >= 2) {
+      for (const j of batch) relevant.add(j.index);
+      continue;
+    }
+
     const list = batch
       .map((j, idx) => `${idx + 1}. ${j.title} - ${j.company} [${j.tags.slice(0, 4).join(", ")}]`)
       .join("\n");
@@ -162,8 +182,13 @@ export async function classifyBatch(
     const nums = await classifySingleBatch(batch.length, userProfile, list);
 
     if (!nums) {
+      consecutiveFailures++;
+      if (consecutiveFailures >= 2) {
+        log("LLM classify unavailable — using score-only filter");
+      }
       for (const j of batch) relevant.add(j.index);
     } else {
+      consecutiveFailures = 0;
       for (const n of nums) {
         const job = batch[n - 1];
         if (job) relevant.add(job.index);
@@ -211,8 +236,11 @@ export async function parseJobDescription(
 ): Promise<ParsedJob | null> {
   const cached = getCachedParse(jobKey);
   if (cached) {
-    debug(`LLM cache hit [${jobKey}]: ${cached.primaryTags.join(", ")}`);
-    return cached;
+    if (cached.quality === "full" || !isParseAvailable()) {
+      debug(`LLM cache hit [${jobKey}]: ${cached.parsed.primaryTags.join(", ")}`);
+      return cached.parsed;
+    }
+    debug(`LLM upgrading quick parse [${jobKey}]`);
   }
 
   if (!isParseAvailable()) {
@@ -268,7 +296,7 @@ async function parseWithRetry(jobKey: string, prepared: string): Promise<ParsedJ
 /** Lightweight tagging - only tags + seniority. Used when heavy parse budget is exceeded. */
 export async function quickTagJob(jobKey: string, description: string): Promise<ParsedJob | null> {
   const cached = getCachedParse(jobKey);
-  if (cached && cached.requirements.length > 0) return cached;
+  if (cached && cached.parsed.requirements.length > 0) return cached.parsed;
   if (!description || description.trim().length < MIN_DESCRIPTION_LENGTH) return null;
 
   const raw = await callLLM("light", QUICK_TAG_PROMPT, prepareDescription(description), {
@@ -295,7 +323,7 @@ export async function quickTagJob(jobKey: string, description: string): Promise<
     primaryTags: tags,
   };
 
-  setCachedParse(jobKey, parsed);
+  setCachedParse(jobKey, parsed, "quick");
   debug(`Quick-tag [${jobKey}]: ${tags.join(", ")}`);
   return parsed;
 }

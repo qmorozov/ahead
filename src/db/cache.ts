@@ -4,9 +4,16 @@ import { log } from "../lib/logger";
 
 const SECONDS_PER_DAY = 86_400;
 
+export type ParseQuality = "full" | "quick";
+
+export interface CachedParse {
+  parsed: ParsedJob;
+  quality: ParseQuality;
+}
+
 const sql = {
-  getParsed: db.prepare(`SELECT parsed_json FROM parsed_jobs WHERE job_key = ?`),
-  setParsed: db.prepare(`INSERT OR REPLACE INTO parsed_jobs (job_key, parsed_json) VALUES (?, ?)`),
+  getParsed: db.prepare(`SELECT parsed_json, parse_quality FROM parsed_jobs WHERE job_key = ?`),
+  setParsed: db.prepare(`INSERT OR REPLACE INTO parsed_jobs (job_key, parsed_json, parse_quality) VALUES (?, ?, ?)`),
   pruneParsed: db.prepare(`DELETE FROM parsed_jobs WHERE parsed_at < unixepoch() - ?`),
 
   getCompanyUrl: db.prepare(`SELECT url FROM company_urls WHERE name = ?`),
@@ -19,19 +26,20 @@ const sql = {
 
 // Parsed jobs cache (30day TTL)
 
-export function getCachedParse(jobKey: string): ParsedJob | null {
-  const row = sql.getParsed.get(jobKey) as { parsed_json: string } | undefined;
+export function getCachedParse(jobKey: string): CachedParse | null {
+  const row = sql.getParsed.get(jobKey) as { parsed_json: string; parse_quality: string } | undefined;
   if (!row) return null;
   try {
     const result = ParsedJobSchema.safeParse(JSON.parse(row.parsed_json));
-    return result.success ? result.data : null;
+    if (!result.success) return null;
+    return { parsed: result.data, quality: row.parse_quality === "quick" ? "quick" : "full" };
   } catch {
     return null;
   }
 }
 
-export function setCachedParse(jobKey: string, parsed: ParsedJob): void {
-  sql.setParsed.run(jobKey, JSON.stringify(parsed));
+export function setCachedParse(jobKey: string, parsed: ParsedJob, quality: ParseQuality = "full"): void {
+  sql.setParsed.run(jobKey, JSON.stringify(parsed), quality);
 }
 
 export function pruneParsedCache(maxAgeDays = 30): void {

@@ -7,16 +7,20 @@ export function formatSettings(settings: UserSettings): string {
   const fmt = (arr: string[], fallback: string) => (arr.length > 0 ? arr.join(", ") : fallback);
 
   const salary = settings.minSalaryUsd > 0 ? `$${settings.minSalaryUsd / 1000}k+` : "any";
+  const srcLabel = settings.enabledSources.length > 0 ? `${settings.enabledSources.length} sources` : "all sources";
 
   return [
     `Status \u00b7 ${settings.paused ? "paused" : "active"}`,
     `Roles \u00b7 ${fmt(settings.roles, "\u2014")}`,
     `Technologies \u00b7 ${fmt(settings.keywords, "\u2014")}`,
     `Exclude \u00b7 ${fmt(settings.excludeKeywords, "\u2014")}`,
+    `Work format \u00b7 ${fmt(settings.workArrangement, "any")}`,
     `Locations \u00b7 ${fmt(settings.locations, "any")}`,
     `Seniority \u00b7 ${fmt(settings.seniority, "any")}`,
     `Job type \u00b7 ${fmt(settings.jobTypes, "any")}`,
     `Min salary \u00b7 ${salary}`,
+    `Languages \u00b7 ${fmt(settings.acceptedLanguages, "any")}`,
+    `Sources \u00b7 ${srcLabel}`,
     `Interval \u00b7 ${settings.checkIntervalMinutes}min`,
     `Max age \u00b7 ${settings.maxJobAgeDays > 0 ? `${settings.maxJobAgeDays}d` : "off"}`,
     `Jobs sent \u00b7 ${settings.jobsSent}`,

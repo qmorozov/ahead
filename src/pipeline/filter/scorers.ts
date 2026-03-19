@@ -4,7 +4,7 @@ import { SENIORITY_ORDER, extractSalaryUsd } from "../../lib/utils";
 import { SCORING, PENALTY, STACK, FRESHNESS, POLLING, HIGH_QUALITY_SOURCES } from "../../constants";
 import { CANONICAL_TO_DOMAINS } from "../../lib/tech-data";
 import { testKeyword, matchesAny, normalizeTag, GENERIC_TOOLS } from "./matching";
-import { ROLE_CONFIGS } from "./roles";
+import { ROLE_CONFIGS, GENERIC_DEV_PATTERN } from "./roles";
 import { matchesSeniority, seniorityDetected } from "./seniority";
 import type { ScoringContext, JobAnalysis, ScorerResult } from "./index";
 
@@ -208,9 +208,16 @@ export function scoreRole(
   }
 
   if (!roleMatched) {
-    for (const [role, config] of Object.entries(ROLE_CONFIGS)) {
-      if (!userRoles.has(role) && config.titlePattern.test(job.title)) {
-        return { score: 0, signals: [`wrong role: ${role}`], hardReject: true };
+    // Generic "Software Engineer" titles match any dev role — don't reject
+    if (GENERIC_DEV_PATTERN.test(job.title)) {
+      score += Math.round(SCORING.ROLE_MATCH / 2);
+      signals.push("~software engineer");
+      roleMatched = true;
+    } else {
+      for (const [role, config] of Object.entries(ROLE_CONFIGS)) {
+        if (!userRoles.has(role) && config.titlePattern.test(job.title)) {
+          return { score: 0, signals: [`wrong role: ${role}`], hardReject: true };
+        }
       }
     }
   }
@@ -293,8 +300,8 @@ export function scoreExcludeKeywords(
 
 export function scoreJobQuality(
   job: Job,
-  _parsed: ParsedJob | null,
-  _ctx: ScoringContext,
+  parsed: ParsedJob | null,
+  ctx: ScoringContext,
   a: JobAnalysis,
 ): ScorerResult {
   let score = 0;
@@ -323,6 +330,20 @@ export function scoreJobQuality(
 
   if (job.boardJobCount && job.boardJobCount >= POLLING.COMPANY_SIZE_MIN_JOBS)
     score += SCORING.COMPANY_SIZE;
+
+  const relocateRe = /(must|required to|willing to|open to)\s+relocat/i;
+  if (a.desc && relocateRe.test(a.desc)) {
+    score += PENALTY.RELOCATION;
+    signals.push("relocation required");
+  }
+
+  if (
+    parsed?.workArrangement === "onsite" &&
+    ctx.workArrangement.some((w) => w.toLowerCase() === "remote")
+  ) {
+    score += PENALTY.ARRANGEMENT_MISMATCH;
+    signals.push("onsite only");
+  }
 
   return { score, signals };
 }

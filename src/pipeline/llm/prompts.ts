@@ -9,6 +9,8 @@ Return JSON with these fields:
 - seniority: one of "Intern","Junior","Middle","Senior","Staff","Lead","Manager" or null
 - salary: numeric salary/compensation range if mentioned (e.g., "$120k-150k", "EUR 60,000-80,000"), or null. Do NOT extract legal disclaimers, "competitive salary", or vague compensation statements
 - primaryTags: 4-8 lowercase tags for the specific technologies, frameworks, libraries, and programming languages required for this role (e.g., "react", "python", "kubernetes", "postgresql", "typescript"). For non-technical roles, use domain tags (e.g., "accounting", "sales", "marketing")
+- workArrangement: "remote" if fully remote, "hybrid" if mixed, "onsite" if office required, null if not mentioned
+- locationRestriction: the geographic restriction if remote is limited (e.g. "US only", "EU timezone"), null otherwise
 
 Rules:
 - Keep the original wording of requirements — do NOT summarize "Expert proficiency with React Native, Redux, TypeScript" into just "React Native expertise"

@@ -1,7 +1,6 @@
 import Parser from "rss-parser";
 import { decodeHTML } from "entities";
 import { HTTP_TIMEOUT } from "../config";
-import { ALL_KNOWN_TECHS } from "./tech-data";
 
 export const rssParser = new Parser({ timeout: HTTP_TIMEOUT });
 
@@ -62,9 +61,21 @@ const SENIORITY_ALIASES: Record<string, string> = {
   midlevel: "Middle",
   "mid level": "Middle",
   intermediate: "Middle",
+  medior: "Middle",
+  "semi-senior": "Middle",
   "entry level": "Junior",
   "entry-level": "Junior",
   associate: "Junior",
+  "new grad": "Junior",
+  graduate: "Junior",
+  trainee: "Intern",
+  "co-op": "Intern",
+  "sde i": "Junior",
+  "software engineer i": "Junior",
+  "sde ii": "Middle",
+  "software engineer ii": "Middle",
+  "sde iii": "Senior",
+  "software engineer iii": "Senior",
   principal: "Staff",
   sr: "Senior",
   "sr.": "Senior",
@@ -118,48 +129,71 @@ export function normalizeForDedup(title: string, company: string): string {
   return `${t}::${c}`;
 }
 
-function editDistance(a: string, b: string): number {
-  if (a === b) return 0;
-  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
-  for (let i = 0; i < a.length; i++) {
-    const curr = [i + 1];
-    for (let j = 0; j < b.length; j++)
-      curr[j + 1] = Math.min(prev[j + 1]! + 1, curr[j]! + 1, prev[j]! + (a[i] === b[j] ? 0 : 1));
-    prev = curr;
-  }
-  return prev[b.length]!;
-}
-
-function correctTech(input: string): string {
-  if (ALL_KNOWN_TECHS.has(input)) return input;
-  let best = input;
-  let bestDist = 3;
-  for (const tech of ALL_KNOWN_TECHS) {
-    if (Math.abs(input.length - tech.length) > 2) continue;
-    const d = editDistance(input, tech);
-    if (d < bestDist) {
-      bestDist = d;
-      best = tech;
-    }
-  }
-  return best;
-}
-
 export function parseCommaSeparated(text: string): string[] {
   return text
     .split(",")
-    .map((s) => correctTech(s.trim().toLowerCase()))
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+export function parseCommaSeparatedRaw(text: string): string[] {
+  return text
+    .split(",")
+    .map((s) => s.trim())
     .filter(Boolean);
 }
 
 const NON_USD = /\b(eur|gbp|cad|aud|chf|jpy|cny|inr|brl|pln|czk|sek|nok|dkk|£|€|¥)\b/i;
+
+const TO_USD: Record<string, number> = {
+  eur: 1.08, gbp: 1.27, pln: 0.25, cad: 0.74, chf: 1.12,
+};
+const CURRENCY_SYMBOLS: Record<string, string> = { "€": "eur", "£": "gbp" };
 
 export function extractSalaryUsd(
   salary: string | undefined,
 ): { min: number; max: number } | undefined {
   if (!salary) return undefined;
   const s = salary.toLowerCase().replace(/,/g, "");
-  if (NON_USD.test(s)) return undefined;
+
+  // Handle non-USD currencies with approximate conversion
+  const currencyMatch = s.match(NON_USD);
+  if (currencyMatch) {
+    const raw = currencyMatch[1]!.toLowerCase();
+    const code = CURRENCY_SYMBOLS[raw] ?? raw;
+    const rate = TO_USD[code];
+    if (!rate) return undefined;
+
+    const ns = s.replace(/(\d)\s+(\d)/g, "$1$2");
+    const hasHourly = /\/\s*h(?:ou)?r|per\s*hour/i.test(ns);
+    const hasMonthly = /\/\s*mo(?:nth)?|per\s*month/i.test(ns);
+
+    const nums: number[] = [];
+    const rangeK = ns.match(/(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*k\b/);
+    if (rangeK) {
+      nums.push(parseFloat(rangeK[1]!) * 1000, parseFloat(rangeK[2]!) * 1000);
+    } else {
+      for (const m of ns.matchAll(/(\d+(?:\.\d+)?)\s*k\b/g)) nums.push(parseFloat(m[1]!) * 1000);
+      for (const m of ns.matchAll(/(?<!\d\.)(\d{4,})/g)) nums.push(parseFloat(m[1]!));
+      if (nums.length === 0 && (hasHourly || hasMonthly)) {
+        for (const m of ns.matchAll(/(\d+(?:\.\d+)?)/g)) nums.push(parseFloat(m[1]!));
+      }
+    }
+
+    if (nums.length === 0) return undefined;
+    const isHourly = hasHourly || nums.every((n) => n < 500);
+
+    let multiplier = 1;
+    if (isHourly) multiplier = 2080;
+    else if (hasMonthly) multiplier = 12;
+
+    return {
+      min: Math.round(Math.min(...nums) * multiplier * rate),
+      max: Math.round(Math.max(...nums) * multiplier * rate),
+    };
+  }
+
+  // Existing USD logic (unchanged)
   if (!/[$]|usd/.test(s)) return undefined;
 
   const hasHourlyMarker = /\/\s*h(?:ou)?r|per\s*hour/i.test(s);

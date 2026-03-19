@@ -14,10 +14,14 @@ export interface UserSettings {
   chatId: string;
   roles: string[];
   keywords: string[];
+  primaryStack: string[];
   excludeKeywords: string[];
   locations: string[];
   seniority: string[];
   jobTypes: string[];
+  workArrangement: string[];
+  acceptedLanguages: string[];
+  enabledSources: string[];
   minSalaryUsd: number;
   checkIntervalMinutes: number;
   maxJobAgeDays: number;
@@ -30,10 +34,14 @@ export function createDefaultSettings(chatId: string): UserSettings {
     chatId,
     roles: [],
     keywords: [],
+    primaryStack: [],
     excludeKeywords: [],
     locations: [],
     seniority: [],
     jobTypes: [],
+    workArrangement: [],
+    acceptedLanguages: ["English"],
+    enabledSources: [],
     minSalaryUsd: 0,
     checkIntervalMinutes: 30,
     maxJobAgeDays: 2,
@@ -50,11 +58,14 @@ const sql = {
   get: db.prepare(`SELECT * FROM settings WHERE chat_id = ?`),
   getAll: db.prepare(`SELECT * FROM settings`),
   upsert: db.prepare(`
-    INSERT INTO settings (chat_id, roles, keywords, exclude_keywords, locations, seniority, job_types, min_salary_usd, check_interval_minutes, max_job_age_days, paused, jobs_sent)
-    VALUES (@chat_id, @roles, @keywords, @exclude_keywords, @locations, @seniority, @job_types, @min_salary_usd, @check_interval_minutes, @max_job_age_days, @paused, 0)
+    INSERT INTO settings (chat_id, roles, keywords, primary_stack, exclude_keywords, locations, seniority, job_types,
+      work_arrangement, accepted_languages, enabled_sources, min_salary_usd, check_interval_minutes, max_job_age_days, paused, jobs_sent)
+    VALUES (@chat_id, @roles, @keywords, @primary_stack, @exclude_keywords, @locations, @seniority, @job_types,
+      @work_arrangement, @accepted_languages, @enabled_sources, @min_salary_usd, @check_interval_minutes, @max_job_age_days, @paused, 0)
     ON CONFLICT(chat_id) DO UPDATE SET
-      roles = @roles, keywords = @keywords, exclude_keywords = @exclude_keywords,
+      roles = @roles, keywords = @keywords, primary_stack = @primary_stack, exclude_keywords = @exclude_keywords,
       locations = @locations, seniority = @seniority, job_types = @job_types,
+      work_arrangement = @work_arrangement, accepted_languages = @accepted_languages, enabled_sources = @enabled_sources,
       min_salary_usd = @min_salary_usd, check_interval_minutes = @check_interval_minutes,
       max_job_age_days = @max_job_age_days, paused = @paused
   `),
@@ -67,10 +78,14 @@ function rowToSettings(row: Record<string, unknown>): UserSettings {
     chatId: row.chat_id as string,
     roles: jsonArray(row.roles),
     keywords: jsonArray(row.keywords),
+    primaryStack: jsonArray(row.primary_stack),
     excludeKeywords: jsonArray(row.exclude_keywords),
     locations: jsonArray(row.locations),
     seniority: jsonArray(row.seniority),
     jobTypes: jsonArray(row.job_types),
+    workArrangement: jsonArray(row.work_arrangement),
+    acceptedLanguages: jsonArray(row.accepted_languages),
+    enabledSources: jsonArray(row.enabled_sources),
     minSalaryUsd: (row.min_salary_usd as number) ?? 0,
     checkIntervalMinutes: row.check_interval_minutes as number,
     maxJobAgeDays: row.max_job_age_days as number,
@@ -89,10 +104,14 @@ export function saveSettings(settings: UserSettings): void {
     chat_id: settings.chatId,
     roles: JSON.stringify(settings.roles),
     keywords: JSON.stringify(settings.keywords),
+    primary_stack: JSON.stringify(settings.primaryStack),
     exclude_keywords: JSON.stringify(settings.excludeKeywords),
     locations: JSON.stringify(settings.locations),
     seniority: JSON.stringify(settings.seniority),
     job_types: JSON.stringify(settings.jobTypes),
+    work_arrangement: JSON.stringify(settings.workArrangement),
+    accepted_languages: JSON.stringify(settings.acceptedLanguages),
+    enabled_sources: JSON.stringify(settings.enabledSources),
     min_salary_usd: settings.minSalaryUsd,
     check_interval_minutes: settings.checkIntervalMinutes,
     max_job_age_days: settings.maxJobAgeDays,

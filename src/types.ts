@@ -27,6 +27,8 @@ export const ParsedJobSchema = z.object({
   seniority: SeniorityEnum.nullable().catch(null),
   salary: z.string().nullable(),
   primaryTags: z.array(z.string()),
+  workArrangement: z.enum(["remote", "hybrid", "onsite"]).nullable().catch(null),
+  locationRestriction: z.string().max(100).nullable().catch(null),
 });
 
 export type ParsedJob = z.infer<typeof ParsedJobSchema>;

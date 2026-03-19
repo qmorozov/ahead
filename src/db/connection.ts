@@ -96,6 +96,32 @@ const migrations: string[] = [
 
   `ALTER TABLE pending_jobs ADD COLUMN chat_id TEXT NOT NULL DEFAULT '';
   CREATE INDEX IF NOT EXISTS idx_pending_jobs_chat ON pending_jobs(chat_id);`,
+
+  `ALTER TABLE settings ADD COLUMN work_arrangement TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE settings ADD COLUMN accepted_languages TEXT NOT NULL DEFAULT '["English"]';
+  ALTER TABLE settings ADD COLUMN enabled_sources TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE settings ADD COLUMN primary_stack TEXT NOT NULL DEFAULT '[]';`,
+
+  // Fix bad defaults from migration 9: 'any' is not valid JSON, and 'en' should be 'English'
+  `UPDATE settings SET work_arrangement = '[]' WHERE work_arrangement = 'any';
+  UPDATE settings SET accepted_languages = '["English"]' WHERE accepted_languages = '["en"]';`,
+
+  `CREATE TABLE IF NOT EXISTS deferred_jobs (
+    chat_id TEXT NOT NULL,
+    job_key TEXT NOT NULL,
+    cycles INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, job_key)
+  );`,
+
+  `ALTER TABLE parsed_jobs ADD COLUMN parse_quality TEXT NOT NULL DEFAULT 'full';`,
+
+  `CREATE TABLE IF NOT EXISTS source_health (
+    source TEXT PRIMARY KEY,
+    last_success_at INTEGER,
+    last_job_count INTEGER,
+    fail_streak INTEGER NOT NULL DEFAULT 0
+  );`,
 ];
 
 const currentVersion = (db.pragma("user_version", { simple: true }) as number) ?? 0;
