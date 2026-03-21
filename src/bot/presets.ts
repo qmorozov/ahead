@@ -1,8 +1,5 @@
-import { InlineKeyboard, Keyboard } from "grammy";
 import { JOB_TYPE_PRESETS } from "../lib/utils";
 import { sources } from "../sources";
-
-// ── Types ──────────────────────────────────────────────────────────────────
 
 export type WizardStep =
   | "welcome"
@@ -22,7 +19,7 @@ export interface WizardSession {
   chatId: string;
   createdAt: number;
   roles: Set<string>;
-  technologies: string[]; // ordered — first N are primary
+  technologies: string[]; // ordered first N are primary
   seniority: Set<string>;
   jobTypes: Set<string>;
   workArrangement: Set<string>;
@@ -41,8 +38,6 @@ export type ToggleField =
   | "excludeKeywords";
 
 export type ToggleFieldOrWA = ToggleField | "workArrangement";
-
-// ── Presets ────────────────────────────────────────────────────────────────
 
 export const ROLE_PRESETS = [
   "Frontend",
@@ -145,7 +140,15 @@ export const WIZARD_TECH_PRESETS: Record<string, string[]> = {
   qa: ["selenium", "cypress", "jest", "playwright", "pytest", "docker", "postman"],
 };
 
-export const WIZARD_SENIORITY = ["Intern", "Junior", "Middle", "Senior", "Staff", "Lead", "Manager"];
+export const WIZARD_SENIORITY = [
+  "Intern",
+  "Junior",
+  "Middle",
+  "Senior",
+  "Staff",
+  "Lead",
+  "Manager",
+];
 
 export const WORK_FORMAT_PRESETS = ["Remote", "Hybrid", "Onsite"];
 
@@ -196,8 +199,6 @@ export const PRIMARY_STACK_SIZE = 5;
 
 export { JOB_TYPE_PRESETS };
 
-// ── Step flow ──────────────────────────────────────────────────────────────
-
 export const STEP_FLOW: Record<string, WizardStep | "finish"> = {
   roles: "technologies",
   technologies: "seniority",
@@ -221,7 +222,7 @@ export const STEP_BACK: Record<string, WizardStep> = {
   excludes: "languages",
 };
 
-export const TOTAL_STEPS = 9;
+export const TOTAL_STEPS = Object.keys(STEP_FLOW).length;
 
 export const WIZ_TOGGLE: Record<string, ToggleFieldOrWA> = {
   role: "roles",
@@ -233,132 +234,85 @@ export const WIZ_TOGGLE: Record<string, ToggleFieldOrWA> = {
   excl: "excludeKeywords",
 };
 
-// ── Pure helpers ────────────────────────────────────────────────────────────
+export const STEP_LABELS: Record<string, string> = {
+  roles: `Step 1 of ${TOTAL_STEPS} \u00b7 Roles`,
+  technologies: `Step 2 of ${TOTAL_STEPS} \u00b7 Technologies`,
+  seniority: `Step 3 of ${TOTAL_STEPS} \u00b7 Level`,
+  jobTypes: `Step 4 of ${TOTAL_STEPS} \u00b7 Job Type`,
+  workFormat: `Step 5 of ${TOTAL_STEPS} \u00b7 Work Format`,
+  locations: `Step 6 of ${TOTAL_STEPS} \u00b7 Location`,
+  salary: `Step 7 of ${TOTAL_STEPS} \u00b7 Min Salary`,
+  languages: `Step 8 of ${TOTAL_STEPS} \u00b7 Languages`,
+  excludes: `Step 9 of ${TOTAL_STEPS} \u00b7 Exclude`,
+};
+
+const NORTH_AMERICA_RE = /usa|united states|america|canada/;
+const WESTERN_EUROPE_RE = /uk|united kingdom|germany|netherlands|france|ireland|switzerland/;
+const EASTERN_EUROPE_RE =
+  /europe|ukraine|poland|romania|bulgaria|czech|hungary|serbia|croatia|baltics/;
+const ASIA_RE = /asia|india|philippines|vietnam|indonesia|malaysia/;
+const LATAM_RE = /latin|brazil|mexico|argentina|colombia|chile/;
+
+type SalaryPreset = { label: string; value: number };
+
+const SALARY_NORTH_AMERICA: SalaryPreset[] = [
+  { label: "$50k+", value: 50_000 },
+  { label: "$80k+", value: 80_000 },
+  { label: "$100k+", value: 100_000 },
+  { label: "$120k+", value: 120_000 },
+  { label: "$150k+", value: 150_000 },
+  { label: "$200k+", value: 200_000 },
+];
+
+const SALARY_WESTERN_EUROPE: SalaryPreset[] = [
+  { label: "$30k+", value: 30_000 },
+  { label: "$50k+", value: 50_000 },
+  { label: "$70k+", value: 70_000 },
+  { label: "$90k+", value: 90_000 },
+  { label: "$120k+", value: 120_000 },
+];
+
+const SALARY_EMERGING: SalaryPreset[] = [
+  { label: "$10k+", value: 10_000 },
+  { label: "$15k+", value: 15_000 },
+  { label: "$25k+", value: 25_000 },
+  { label: "$40k+", value: 40_000 },
+  { label: "$60k+", value: 60_000 },
+  { label: "$80k+", value: 80_000 },
+];
+
+const SALARY_DEFAULT: SalaryPreset[] = [
+  { label: "Skip", value: 0 },
+  { label: "$15k+", value: 15_000 },
+  { label: "$30k+", value: 30_000 },
+  { label: "$50k+", value: 50_000 },
+  { label: "$80k+", value: 80_000 },
+  { label: "$120k+", value: 120_000 },
+  { label: "$200k+", value: 200_000 },
+];
 
 export function getTechPresets(roles: Set<string>): string[] {
-  const techs = new Set<string>();
-  for (const role of roles) {
-    const lower = role.toLowerCase();
-    const keys = lower === "fullstack" ? ["frontend", "backend"] : [lower];
-    for (const k of keys) for (const t of WIZARD_TECH_PRESETS[k] ?? []) techs.add(t);
-  }
+  const keys = [...roles].flatMap((r) => {
+    const lower = r.toLowerCase();
+    return lower === "fullstack" ? ["frontend", "backend"] : [lower];
+  });
+  const techs = new Set(keys.flatMap((k) => WIZARD_TECH_PRESETS[k] ?? []));
   return [...techs];
 }
 
-export function getSalaryPresets(locations: Set<string>): { label: string; value: number }[] {
+export function getSalaryPresets(locations: Iterable<string>): SalaryPreset[] {
   const locs = [...locations].map((l) => l.toLowerCase());
-  const isUSA = locs.some((l) => /usa|us|united states|america|canada/.test(l));
-  const isWesternEurope = locs.some((l) =>
-    /uk|united kingdom|western europe|germany|netherlands|france|ireland|switzerland/.test(l),
-  );
-  const isEasternEurope = locs.some((l) =>
-    /europe|ukraine|poland|romania|bulgaria|czech|hungary|serbia|croatia|baltics/.test(l),
-  );
-  const isAsia = locs.some((l) => /asia|india|philippines|vietnam|indonesia|malaysia/.test(l));
-  const isLatAm = locs.some((l) => /latin|brazil|mexico|argentina|colombia|chile/.test(l));
+  const matchesRegion = (re: RegExp) => locs.some((l) => re.test(l));
 
-  if (isUSA)
-    return [
-      { label: "$50k+", value: 50_000 },
-      { label: "$80k+", value: 80_000 },
-      { label: "$100k+", value: 100_000 },
-      { label: "$120k+", value: 120_000 },
-      { label: "$150k+", value: 150_000 },
-      { label: "$200k+", value: 200_000 },
-    ];
-  if (isWesternEurope && !isEasternEurope)
-    return [
-      { label: "$30k+", value: 30_000 },
-      { label: "$50k+", value: 50_000 },
-      { label: "$70k+", value: 70_000 },
-      { label: "$90k+", value: 90_000 },
-      { label: "$120k+", value: 120_000 },
-    ];
-  if (isEasternEurope || isLatAm)
-    return [
-      { label: "$10k+", value: 10_000 },
-      { label: "$15k+", value: 15_000 },
-      { label: "$25k+", value: 25_000 },
-      { label: "$40k+", value: 40_000 },
-      { label: "$60k+", value: 60_000 },
-      { label: "$80k+", value: 80_000 },
-    ];
-  if (isAsia)
-    return [
-      { label: "$10k+", value: 10_000 },
-      { label: "$15k+", value: 15_000 },
-      { label: "$25k+", value: 25_000 },
-      { label: "$40k+", value: 40_000 },
-      { label: "$60k+", value: 60_000 },
-      { label: "$80k+", value: 80_000 },
-    ];
-  // Default / Anywhere
-  return [
-    { label: "Skip", value: 0 },
-    { label: "$15k+", value: 15_000 },
-    { label: "$30k+", value: 30_000 },
-    { label: "$50k+", value: 50_000 },
-    { label: "$80k+", value: 80_000 },
-    { label: "$120k+", value: 120_000 },
-    { label: "$200k+", value: 200_000 },
-  ];
+  if (matchesRegion(NORTH_AMERICA_RE)) return SALARY_NORTH_AMERICA;
+  if (matchesRegion(WESTERN_EUROPE_RE) && !matchesRegion(EASTERN_EUROPE_RE))
+    return SALARY_WESTERN_EUROPE;
+  if (matchesRegion(EASTERN_EUROPE_RE) || matchesRegion(LATAM_RE) || matchesRegion(ASIA_RE))
+    return SALARY_EMERGING;
+  return SALARY_DEFAULT;
 }
 
-export function isRemoteOnly(wa: Set<string> | string[]): boolean {
-  if (wa instanceof Set) return wa.size === 1 && wa.has("Remote");
-  return wa.length === 1 && wa.includes("Remote");
-}
-
-export function replyKb(paused: boolean): Keyboard {
-  return new Keyboard()
-    .text("\u2699\ufe0f Settings")
-    .text(paused ? "\u25b6 Resume" : "\u23f8 Pause")
-    .row()
-    .text("\ud83d\udcca Activity")
-    .text("\ud83d\udd0c Sources")
-    .resized();
-}
-
-export function toggleGrid(
-  presets: string[],
-  selected: Set<string>,
-  prefix: string,
-  perRow: number,
-): InlineKeyboard {
-  const kb = new InlineKeyboard();
-  for (let i = 0; i < presets.length; i += perRow) {
-    for (const p of presets.slice(i, i + perRow))
-      kb.text(selected.has(p) ? `\u2705 ${p}` : p, `wiz:${prefix}:${p}`);
-    kb.row();
-  }
-  return kb;
-}
-
-export function stepLabel(step: WizardStep): string {
-  const labels: Record<string, string> = {
-    roles: `Step 1 of ${TOTAL_STEPS} \u00b7 Roles`,
-    technologies: `Step 2 of ${TOTAL_STEPS} \u00b7 Technologies`,
-    seniority: `Step 3 of ${TOTAL_STEPS} \u00b7 Level`,
-    jobTypes: `Step 4 of ${TOTAL_STEPS} \u00b7 Job Type`,
-    workFormat: `Step 5 of ${TOTAL_STEPS} \u00b7 Work Format`,
-    locations: `Step 6 of ${TOTAL_STEPS} \u00b7 Location`,
-    salary: `Step 7 of ${TOTAL_STEPS} \u00b7 Min Salary`,
-    languages: `Step 8 of ${TOTAL_STEPS} \u00b7 Languages`,
-    excludes: `Step 9 of ${TOTAL_STEPS} \u00b7 Exclude`,
-  };
-  return labels[step] ?? "";
-}
-
-export function setSelectedText(s: Set<string>): string {
-  return s.size > 0 ? `\n\nSelected: ${[...s].join(", ")}` : "";
-}
-
-export function addNavButtons(kb: InlineKeyboard, step: WizardStep, hasSelection: boolean, isLast = false): void {
-  if (STEP_BACK[step]) kb.text("\u2190 Back", "wiz:back");
-  if (isLast) {
-    kb.text("\u2705 Finish setup", "wiz:done");
-  } else {
-    kb.text("Skip \u2192", "wiz:skip");
-    if (hasSelection) kb.text("Next \u2192", "wiz:done");
-  }
+export function isRemoteOnly(wa: Iterable<string>): boolean {
+  const arr = [...wa];
+  return arr.length === 1 && arr[0] === "Remote";
 }

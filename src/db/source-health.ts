@@ -1,11 +1,14 @@
+import { z } from "zod";
 import { db } from "./connection";
 
-export interface SourceHealthRow {
-  source: string;
-  last_success_at: number | null;
-  last_job_count: number | null;
-  fail_streak: number;
-}
+const SourceHealthRowSchema = z.object({
+  source: z.string(),
+  last_success_at: z.number().nullable(),
+  last_job_count: z.number().nullable(),
+  fail_streak: z.number(),
+});
+
+export type SourceHealthRow = z.infer<typeof SourceHealthRowSchema>;
 
 const sql = {
   get: db.prepare(`SELECT * FROM source_health WHERE source = ?`),
@@ -35,9 +38,18 @@ export function recordSourceFailure(source: string): void {
 }
 
 export function getSourceHealth(source: string): SourceHealthRow | null {
-  return (sql.get.get(source) as SourceHealthRow) ?? null;
+  const row = sql.get.get(source);
+  if (!row) return null;
+  const parsed = SourceHealthRowSchema.safeParse(row);
+  return parsed.success ? parsed.data : null;
 }
 
 export function getAllSourceHealth(): SourceHealthRow[] {
-  return sql.getAll.all() as SourceHealthRow[];
+  const rows = sql.getAll.all();
+  const result: SourceHealthRow[] = [];
+  for (const raw of rows) {
+    const parsed = SourceHealthRowSchema.safeParse(raw);
+    if (parsed.success) result.push(parsed.data);
+  }
+  return result;
 }

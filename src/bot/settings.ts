@@ -17,8 +17,7 @@ import {
   getSalaryPresets,
   isRemoteOnly,
 } from "./presets";
-
-// ── Types ──────────────────────────────────────────────────────────────────
+import { toggleGrid, toRows } from "./keyboards";
 
 type SettingKey =
   | "roles"
@@ -51,8 +50,6 @@ const LABELS: Record<SettingKey, string> = {
   maxJobAgeDays: "Max age",
 };
 
-// ── State ──────────────────────────────────────────────────────────────────
-
 export const waitingForInput = new Map<
   string,
   { key: SettingKey; messageId: number; createdAt: number }
@@ -64,7 +61,9 @@ export function setOnIntervalChanged(cb: () => void): void {
   onIntervalChanged = cb;
 }
 
-// ── Sweep stale input sessions ─────────────────────────────────────────────
+export function fireIntervalChanged(): void {
+  if (onIntervalChanged) onIntervalChanged();
+}
 
 export function sweepStaleInputs(): void {
   const now = Date.now();
@@ -73,10 +72,14 @@ export function sweepStaleInputs(): void {
   }
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
-
 export function isArrayKey(key: string): key is ArraySettingKey {
   return key === "keywords" || key === "excludeKeywords" || key === "locations";
+}
+
+async function loadSettingsOrReject(ctx: Context, chatId: string): Promise<UserSettings | null> {
+  const s = loadSettings(chatId);
+  if (!s) await ctx.answerCallbackQuery("Run /start first.");
+  return s;
 }
 
 function settingsKb(s: UserSettings): InlineKeyboard {
@@ -104,8 +107,8 @@ function settingsKb(s: UserSettings): InlineKeyboard {
 
 function arrayKb(key: ArraySettingKey, items: string[]): InlineKeyboard {
   const kb = new InlineKeyboard();
-  for (let i = 0; i < items.length; i += 2) {
-    for (const item of items.slice(i, i + 2)) kb.text(`\u2715 ${item}`, `set:rm:${key}:${item}`);
+  for (const row of toRows(items, 2)) {
+    for (const item of row) kb.text(`\u2715 ${item}`, `set:rm:${key}:${item}`);
     kb.row();
   }
   return kb.text("\u2190 Back", "set:back");
@@ -117,28 +120,55 @@ export function toggleSettingsKb(
   prefix: string,
   caseSensitive = true,
 ): InlineKeyboard {
-  const set = new Set(caseSensitive ? selected : selected.map((s) => s.toLowerCase()));
-  const isSelected = (item: string) => set.has(caseSensitive ? item : item.toLowerCase());
-  const kb = new InlineKeyboard();
-  for (let i = 0; i < presets.length; i += 3) {
-    for (const item of presets.slice(i, i + 3))
-      kb.text(isSelected(item) ? `\u2705 ${item}` : item, `set:${prefix}:${item}`);
-    kb.row();
-  }
+  const kb = toggleGrid(presets, selected, `set:${prefix}`, 3, caseSensitive);
   return kb.text("\u2190 Back", "set:back");
 }
 
 function salarySettingsKb(current: number, locations: string[]): InlineKeyboard {
   const kb = new InlineKeyboard();
-  const regionPresets = getSalaryPresets(new Set(locations));
+  const regionPresets = getSalaryPresets(locations);
   const hasSkip = regionPresets[0]?.value === 0;
-  const presets = [{ label: "No min", value: 0 }, ...(hasSkip ? regionPresets.slice(1) : regionPresets)];
-  for (let i = 0; i < presets.length; i += 3) {
-    for (const p of presets.slice(i, i + 3))
+  const presets = [
+    { label: "No min", value: 0 },
+    ...(hasSkip ? regionPresets.slice(1) : regionPresets),
+  ];
+  for (const row of toRows(presets, 3)) {
+    for (const p of row)
       kb.text(current === p.value ? `\u2705 ${p.label}` : p.label, `set:sal:${p.value}`);
     kb.row();
   }
   return kb.text("\u2190 Back", "set:back");
+}
+
+function workFormatKb(selected: string[]): InlineKeyboard {
+  const kb = toggleGrid(WORK_FORMAT_PRESETS, selected, "set:wf", 1);
+  return kb.text("\u2190 Back", "set:back");
+}
+
+function sourcesKb(enabled: string[]): InlineKeyboard {
+  const kb = toggleGrid(ALL_SOURCE_NAMES, enabled, "set:src", 2);
+  return kb.text("\u2190 Back", "set:back");
+}
+
+function intervalKb(current: number): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  for (const v of [15, 30, 60])
+    kb.text(current === v ? `\u2705 ${v} min` : `${v} min`, `set:intv:${v}`);
+  kb.row();
+  for (const v of [120, 360])
+    kb.text(current === v ? `\u2705 ${v} min` : `${v} min`, `set:intv:${v}`);
+  kb.row().text("\u2190 Back", "set:back");
+  return kb;
+}
+
+function ageKb(current: number): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  for (const v of [1, 2, 3]) kb.text(current === v ? `\u2705 ${v}d` : `${v}d`, `set:age:${v}`);
+  kb.row();
+  const noLim = current === 0 ? "\u2705 No limit" : "No limit";
+  kb.text(current === 7 ? `\u2705 7d` : "7d", `set:age:7`).text(noLim, `set:age:0`);
+  kb.row().text("\u2190 Back", "set:back");
+  return kb;
 }
 
 async function editOrSend(
@@ -163,8 +193,6 @@ async function editOrSend(
   }
   await ctx.api.sendMessage(chatId, text, { reply_markup: kb });
 }
-
-// ── Show helpers (exported for use by commands.ts and text handler) ────────
 
 export function showSettings(ctx: Context, chatId: string, s: UserSettings, msgId?: number): void {
   editOrSend(
@@ -221,7 +249,344 @@ function showSalaryEditor(ctx: Context, chatId: string, s: UserSettings, msgId?:
   );
 }
 
-// ── Callback handler ───────────────────────────────────────────────────────
+function showWorkFormatEditor(ctx: Context, chatId: string, s: UserSettings, msgId?: number): void {
+  const sel = s.workArrangement.length > 0 ? s.workArrangement.join(", ") : "any";
+  editOrSend(
+    ctx,
+    chatId,
+    `\u2699\ufe0f Work Format\n\nSelected: ${sel}\nTap to toggle.`,
+    workFormatKb(s.workArrangement),
+    msgId,
+  ).catch((e) => logError("showWfEditor", e));
+}
+
+function showSourcesEditor(ctx: Context, chatId: string, s: UserSettings, msgId?: number): void {
+  const enabled = s.enabledSources.length > 0 ? s.enabledSources : ALL_SOURCE_NAMES;
+  const count = enabled.length;
+  editOrSend(
+    ctx,
+    chatId,
+    `\u2699\ufe0f Sources (${count} of ${ALL_SOURCE_NAMES.length} active)\n\nTap to toggle.`,
+    sourcesKb(enabled),
+    msgId,
+  ).catch((e) => logError("showSrcEditor", e));
+}
+
+function showIntervalEditor(ctx: Context, chatId: string, value: number, msgId?: number): void {
+  editOrSend(
+    ctx,
+    chatId,
+    `\u2699\ufe0f Interval\n\nCurrently: every ${value} minutes.\nTap or type a number.`,
+    intervalKb(value),
+    msgId,
+  ).catch((e) => logError("showIntervalEditor", e));
+}
+
+function showAgeEditor(ctx: Context, chatId: string, value: number, msgId?: number): void {
+  editOrSend(
+    ctx,
+    chatId,
+    `\u2699\ufe0f Max age\n\nCurrently: ${value > 0 ? `${value} days` : "no limit"}.\nTap or type a number.`,
+    ageKb(value),
+    msgId,
+  ).catch((e) => logError("showAgeEditor", e));
+}
+
+interface CallbackRoute {
+  prefix: string;
+  handle(
+    value: string,
+    s: UserSettings,
+    ctx: Context,
+    chatId: string,
+    msgId: number | undefined,
+  ): string | void;
+}
+
+interface ToggleRouteConfig {
+  prefix: string;
+  field: keyof Pick<UserSettings, "roles" | "seniority" | "jobTypes" | "excludeKeywords">;
+  label: string;
+  presets: string[];
+  caseSensitive: boolean;
+}
+
+const TOGGLE_ROUTES: readonly ToggleRouteConfig[] = [
+  {
+    prefix: "set:role:",
+    field: "roles",
+    label: "Roles",
+    presets: ROLE_PRESETS,
+    caseSensitive: true,
+  },
+  {
+    prefix: "set:sen:",
+    field: "seniority",
+    label: "Seniority",
+    presets: WIZARD_SENIORITY,
+    caseSensitive: false,
+  },
+  {
+    prefix: "set:jtype:",
+    field: "jobTypes",
+    label: "Job Type",
+    presets: JOB_TYPE_PRESETS,
+    caseSensitive: false,
+  },
+  {
+    prefix: "set:excl:",
+    field: "excludeKeywords",
+    label: "Exclude",
+    presets: EXCLUDE_PRESETS,
+    caseSensitive: false,
+  },
+];
+
+function buildToggleRoute(cfg: ToggleRouteConfig): CallbackRoute {
+  return {
+    prefix: cfg.prefix,
+    handle(rawValue, s, ctx, chatId, msgId) {
+      const value = cfg.caseSensitive ? rawValue : rawValue.toLowerCase();
+      const arr = s[cfg.field];
+      const idx = arr.findIndex((x) => (cfg.caseSensitive ? x : x.toLowerCase()) === value);
+      if (idx >= 0) arr.splice(idx, 1);
+      else arr.push(cfg.caseSensitive ? value : rawValue);
+      saveSettings(s);
+      const togglePrefix = cfg.prefix.slice(4, -1);
+      showToggleEditor(
+        ctx,
+        chatId,
+        cfg.label,
+        arr,
+        toggleSettingsKb(cfg.presets, arr, togglePrefix, cfg.caseSensitive),
+        msgId,
+      );
+    },
+  };
+}
+
+const CUSTOM_ROUTES: readonly CallbackRoute[] = [
+  {
+    prefix: "set:loc:",
+    handle(value, s, ctx, chatId, msgId) {
+      const idx = s.locations.indexOf(value);
+      if (idx >= 0) s.locations.splice(idx, 1);
+      else s.locations.push(value);
+      // "Anywhere" is mutually exclusive with specific locations
+      if (value === "Anywhere" && s.locations.includes("Anywhere")) {
+        s.locations = ["Anywhere"];
+      } else {
+        s.locations = s.locations.filter((l) => l !== "Anywhere");
+      }
+      saveSettings(s);
+      const locPresets = isRemoteOnly(s.workArrangement)
+        ? REMOTE_LOCATION_PRESETS
+        : LOCATION_SETTINGS_PRESETS;
+      showToggleEditor(
+        ctx,
+        chatId,
+        "Locations",
+        s.locations,
+        toggleSettingsKb(locPresets, s.locations, "loc"),
+        msgId,
+      );
+    },
+  },
+  {
+    prefix: "set:wf:",
+    handle(value, s, ctx, chatId, msgId) {
+      const wasBefore = isRemoteOnly(s.workArrangement);
+      const idx = s.workArrangement.indexOf(value);
+      if (idx >= 0) s.workArrangement.splice(idx, 1);
+      else s.workArrangement.push(value);
+      // switching between remote/non-remote resets locations (different presets apply)
+      if (wasBefore !== isRemoteOnly(s.workArrangement)) s.locations = [];
+      saveSettings(s);
+      showWorkFormatEditor(ctx, chatId, s, msgId);
+    },
+  },
+  {
+    prefix: "set:lang:",
+    handle(value, s, ctx, chatId, msgId) {
+      if (value !== "English") {
+        const idx = s.acceptedLanguages.indexOf(value);
+        if (idx >= 0) s.acceptedLanguages.splice(idx, 1);
+        else s.acceptedLanguages.push(value);
+        saveSettings(s);
+      }
+      showToggleEditor(
+        ctx,
+        chatId,
+        "Languages",
+        s.acceptedLanguages,
+        toggleSettingsKb(LANGUAGE_PRESETS, s.acceptedLanguages, "lang"),
+        msgId,
+      );
+    },
+  },
+  {
+    prefix: "set:src:",
+    handle(value, s, ctx, chatId, msgId) {
+      const idx = s.enabledSources.indexOf(value);
+      if (idx >= 0 && s.enabledSources.length > 1) s.enabledSources.splice(idx, 1);
+      else if (idx < 0) s.enabledSources.push(value);
+      saveSettings(s);
+      showSourcesEditor(ctx, chatId, s, msgId);
+    },
+  },
+  {
+    prefix: "set:intv:",
+    handle(raw, s, ctx, chatId, msgId) {
+      const value = parseInt(raw, 10);
+      s.checkIntervalMinutes = value;
+      saveSettings(s);
+      fireIntervalChanged();
+      showIntervalEditor(ctx, chatId, value, msgId);
+    },
+  },
+  {
+    prefix: "set:age:",
+    handle(raw, s, ctx, chatId, msgId) {
+      const value = parseInt(raw, 10);
+      s.maxJobAgeDays = value;
+      saveSettings(s);
+      showAgeEditor(ctx, chatId, value, msgId);
+    },
+  },
+  {
+    prefix: "set:sal:",
+    handle(raw, s, ctx, chatId, msgId) {
+      s.minSalaryUsd = parseInt(raw, 10);
+      saveSettings(s);
+      showSalaryEditor(ctx, chatId, s, msgId);
+    },
+  },
+  {
+    prefix: "set:rm:",
+    handle(raw, s, ctx, chatId, msgId) {
+      const parts = raw.split(":");
+      const key = parts[0] ?? "";
+      if (!isArrayKey(key)) return undefined;
+      const value = parts.slice(1).join(":");
+      s[key] = s[key].filter((item) => item !== value);
+      saveSettings(s);
+      showArrayEditor(ctx, chatId, key, s, msgId);
+      return `Removed "${value}"`;
+    },
+  },
+];
+
+const ALL_ROUTES: readonly CallbackRoute[] = [
+  ...TOGGLE_ROUTES.map(buildToggleRoute),
+  ...CUSTOM_ROUTES,
+];
+
+interface EditorConfig {
+  inputKey?: SettingKey;
+  show(ctx: Context, chatId: string, s: UserSettings, msgId: number | undefined): void;
+}
+
+const EDITOR_MAP: Readonly<Record<string, EditorConfig>> = {
+  roles: {
+    show: (ctx, cid, s, mid) =>
+      showToggleEditor(
+        ctx,
+        cid,
+        "Roles",
+        s.roles,
+        toggleSettingsKb(ROLE_PRESETS, s.roles, "role"),
+        mid,
+      ),
+  },
+  seniority: {
+    show: (ctx, cid, s, mid) =>
+      showToggleEditor(
+        ctx,
+        cid,
+        "Seniority",
+        s.seniority,
+        toggleSettingsKb(WIZARD_SENIORITY, s.seniority, "sen", false),
+        mid,
+      ),
+  },
+  jobTypes: {
+    show: (ctx, cid, s, mid) =>
+      showToggleEditor(
+        ctx,
+        cid,
+        "Job Type",
+        s.jobTypes,
+        toggleSettingsKb(JOB_TYPE_PRESETS, s.jobTypes, "jtype", false),
+        mid,
+      ),
+  },
+  locations: {
+    inputKey: "locations",
+    show(ctx, cid, s, mid) {
+      const presets = isRemoteOnly(s.workArrangement)
+        ? REMOTE_LOCATION_PRESETS
+        : LOCATION_SETTINGS_PRESETS;
+      showToggleEditor(
+        ctx,
+        cid,
+        "Locations",
+        s.locations,
+        toggleSettingsKb(presets, s.locations, "loc"),
+        mid,
+      );
+    },
+  },
+  excludeKeywords: {
+    inputKey: "excludeKeywords",
+    show: (ctx, cid, s, mid) =>
+      showToggleEditor(
+        ctx,
+        cid,
+        "Exclude",
+        s.excludeKeywords,
+        toggleSettingsKb(EXCLUDE_PRESETS, s.excludeKeywords, "excl", false),
+        mid,
+      ),
+  },
+  workArrangement: { show: (ctx, cid, s, mid) => showWorkFormatEditor(ctx, cid, s, mid) },
+  acceptedLanguages: {
+    show: (ctx, cid, s, mid) =>
+      showToggleEditor(
+        ctx,
+        cid,
+        "Languages",
+        s.acceptedLanguages,
+        toggleSettingsKb(LANGUAGE_PRESETS, s.acceptedLanguages, "lang"),
+        mid,
+      ),
+  },
+  enabledSources: { show: (ctx, cid, s, mid) => showSourcesEditor(ctx, cid, s, mid) },
+  minSalaryUsd: { show: (ctx, cid, s, mid) => showSalaryEditor(ctx, cid, s, mid) },
+  checkIntervalMinutes: {
+    inputKey: "checkIntervalMinutes",
+    show: (ctx, cid, s, mid) => showIntervalEditor(ctx, cid, s.checkIntervalMinutes, mid),
+  },
+  maxJobAgeDays: {
+    inputKey: "maxJobAgeDays",
+    show: (ctx, cid, s, mid) => showAgeEditor(ctx, cid, s.maxJobAgeDays, mid),
+  },
+};
+
+// Falls back to showArrayEditor for keys without an EDITOR_MAP entry
+export function showEditorForKey(
+  ctx: Context,
+  chatId: string,
+  key: SettingKey,
+  s: UserSettings,
+  msgId?: number,
+): void {
+  if (isArrayKey(key) && !EDITOR_MAP[key]) {
+    showArrayEditor(ctx, chatId, key, s, msgId);
+    return;
+  }
+  const editor = EDITOR_MAP[key];
+  if (editor) editor.show(ctx, chatId, s, msgId);
+}
 
 export const settingsCallbacks = new Composer<Context>();
 
@@ -231,11 +596,8 @@ settingsCallbacks.callbackQuery(/^set:/, async (ctx) => {
   const msgId = ctx.callbackQuery.message?.message_id;
 
   if (data === "set:togglePause") {
-    const s = loadSettings(chatId);
-    if (!s) {
-      await ctx.answerCallbackQuery("Run /start first.");
-      return;
-    }
+    const s = await loadSettingsOrReject(ctx, chatId);
+    if (!s) return;
     s.paused = !s.paused;
     saveSettings(s);
     await ctx.answerCallbackQuery(s.paused ? "Paused." : "Resumed!");
@@ -253,443 +615,40 @@ settingsCallbacks.callbackQuery(/^set:/, async (ctx) => {
     return;
   }
 
-  const toggleConfigs: Record<
-    string,
-    {
-      prefix: string;
-      field: keyof Pick<UserSettings, "roles" | "seniority" | "jobTypes" | "excludeKeywords">;
-      label: string;
-      presets: string[];
-      caseSensitive: boolean;
-    }
-  > = {
-    "set:role:": {
-      prefix: "set:role:",
-      field: "roles",
-      label: "Roles",
-      presets: ROLE_PRESETS,
-      caseSensitive: true,
-    },
-    "set:sen:": {
-      prefix: "set:sen:",
-      field: "seniority",
-      label: "Seniority",
-      presets: WIZARD_SENIORITY,
-      caseSensitive: false,
-    },
-    "set:jtype:": {
-      prefix: "set:jtype:",
-      field: "jobTypes",
-      label: "Job Type",
-      presets: JOB_TYPE_PRESETS,
-      caseSensitive: false,
-    },
-    "set:excl:": {
-      prefix: "set:excl:",
-      field: "excludeKeywords",
-      label: "Exclude",
-      presets: EXCLUDE_PRESETS,
-      caseSensitive: false,
-    },
-  };
-
-  for (const [pfx, cfg] of Object.entries(toggleConfigs)) {
-    if (!data.startsWith(pfx)) continue;
-    const value = cfg.caseSensitive ? data.slice(pfx.length) : data.slice(pfx.length).toLowerCase();
-    const s = loadSettings(chatId);
-    if (!s) {
-      await ctx.answerCallbackQuery("Run /start first.");
-      return;
-    }
-    const arr = s[cfg.field];
-    const idx = arr.findIndex((x) => (cfg.caseSensitive ? x : x.toLowerCase()) === value);
-    if (idx >= 0) arr.splice(idx, 1);
-    else arr.push(cfg.caseSensitive ? value : data.slice(pfx.length));
-    saveSettings(s);
-    await ctx.answerCallbackQuery();
-    showToggleEditor(
-      ctx,
-      chatId,
-      cfg.label,
-      arr,
-      toggleSettingsKb(cfg.presets, arr, pfx.slice(4, -1), cfg.caseSensitive),
-      msgId,
-    );
-    return;
-  }
-
-  // Location toggle
-  if (data.startsWith("set:loc:")) {
-    const value = data.slice(8);
-    const s = loadSettings(chatId);
-    if (!s) {
-      await ctx.answerCallbackQuery("Run /start first.");
-      return;
-    }
-    const idx = s.locations.indexOf(value);
-    if (idx >= 0) s.locations.splice(idx, 1);
-    else s.locations.push(value);
-    // "Anywhere" clears others, selecting anything else removes "Anywhere"
-    if (value === "Anywhere" && s.locations.includes("Anywhere")) {
-      s.locations = ["Anywhere"];
-    } else {
-      s.locations = s.locations.filter((l) => l !== "Anywhere");
-    }
-    saveSettings(s);
-    await ctx.answerCallbackQuery();
-    const locPresets = isRemoteOnly(s.workArrangement) ? REMOTE_LOCATION_PRESETS : LOCATION_SETTINGS_PRESETS;
-    showToggleEditor(
-      ctx,
-      chatId,
-      "Locations",
-      s.locations,
-      toggleSettingsKb(locPresets, s.locations, "loc"),
-      msgId,
-    );
-    return;
-  }
-
-  // Work format toggle
-  if (data.startsWith("set:wf:")) {
-    const value = data.slice(7);
-    const s = loadSettings(chatId);
-    if (!s) {
-      await ctx.answerCallbackQuery("Run /start first.");
-      return;
-    }
-    const wasBefore = isRemoteOnly(s.workArrangement);
-    const idx = s.workArrangement.indexOf(value);
-    if (idx >= 0) s.workArrangement.splice(idx, 1);
-    else s.workArrangement.push(value);
-    const isNow = isRemoteOnly(s.workArrangement);
-    // Reset locations when switching between Remote and non-Remote (different preset formats)
-    if (wasBefore !== isNow) s.locations = [];
-    saveSettings(s);
-    await ctx.answerCallbackQuery();
-    const wfSet = new Set(s.workArrangement);
-    const wfKb = new InlineKeyboard();
-    for (const p of WORK_FORMAT_PRESETS)
-      wfKb.text(wfSet.has(p) ? `\u2705 ${p}` : p, `set:wf:${p}`).row();
-    wfKb.text("\u2190 Back", "set:back");
-    const sel = s.workArrangement.length > 0 ? s.workArrangement.join(", ") : "any";
-    editOrSend(
-      ctx,
-      chatId,
-      `\u2699\ufe0f Work Format\n\nSelected: ${sel}\nTap to toggle.`,
-      wfKb,
-      msgId,
-    ).catch((e) => logError("showWfEditor", e));
-    return;
-  }
-
-  // Language toggle
-  if (data.startsWith("set:lang:")) {
-    const value = data.slice(9);
-    const s = loadSettings(chatId);
-    if (!s) {
-      await ctx.answerCallbackQuery("Run /start first.");
-      return;
-    }
-    if (value !== "English") {
-      const idx = s.acceptedLanguages.indexOf(value);
-      if (idx >= 0) s.acceptedLanguages.splice(idx, 1);
-      else s.acceptedLanguages.push(value);
-      saveSettings(s);
-    }
-    await ctx.answerCallbackQuery();
-    showToggleEditor(
-      ctx,
-      chatId,
-      "Languages",
-      s.acceptedLanguages,
-      toggleSettingsKb(LANGUAGE_PRESETS, s.acceptedLanguages, "lang"),
-      msgId,
-    );
-    return;
-  }
-
-  // Source toggle
-  if (data.startsWith("set:src:")) {
-    const name = data.slice(8);
-    const s = loadSettings(chatId);
-    if (!s) {
-      await ctx.answerCallbackQuery("Run /start first.");
-      return;
-    }
-    const idx = s.enabledSources.indexOf(name);
-    if (idx >= 0 && s.enabledSources.length > 1) s.enabledSources.splice(idx, 1);
-    else if (idx < 0) s.enabledSources.push(name);
-    saveSettings(s);
-    await ctx.answerCallbackQuery();
-    const srcSet = new Set(s.enabledSources);
-    const srcKb = new InlineKeyboard();
-    for (let i = 0; i < ALL_SOURCE_NAMES.length; i += 2) {
-      for (const n of ALL_SOURCE_NAMES.slice(i, i + 2))
-        srcKb.text(srcSet.has(n) ? `\u2705 ${n}` : n, `set:src:${n}`);
-      srcKb.row();
-    }
-    srcKb.text("\u2190 Back", "set:back");
-    const count = s.enabledSources.length;
-    editOrSend(
-      ctx,
-      chatId,
-      `\u2699\ufe0f Sources (${count} of ${ALL_SOURCE_NAMES.length} active)\n\nTap to toggle.`,
-      srcKb,
-      msgId,
-    ).catch((e) => logError("showSrcEditor", e));
-    return;
-  }
-
   if (data === "set:noop") {
     await ctx.answerCallbackQuery();
     return;
   }
 
-  // Interval preset
-  if (data.startsWith("set:intv:")) {
-    const value = parseInt(data.slice(9), 10);
-    const s = loadSettings(chatId);
-    if (!s) {
-      await ctx.answerCallbackQuery("Run /start first.");
-      return;
-    }
-    s.checkIntervalMinutes = value;
-    saveSettings(s);
-    await ctx.answerCallbackQuery();
-    if (onIntervalChanged) onIntervalChanged();
-    // Re-render interval editor with updated value
-    const kb = new InlineKeyboard();
-    for (const v of [15, 30, 60])
-      kb.text(value === v ? `\u2705 ${v} min` : `${v} min`, `set:intv:${v}`);
-    kb.row();
-    for (const v of [120, 360])
-      kb.text(value === v ? `\u2705 ${v} min` : `${v} min`, `set:intv:${v}`);
-    kb.row().text("\u2190 Back", "set:back");
-    editOrSend(
-      ctx,
-      chatId,
-      `\u2699\ufe0f Interval\n\nCurrently: every ${value} minutes.\nTap or type a number.`,
-      kb,
-      msgId,
-    ).catch((e) => logError("showIntervalEditor", e));
+  // match prefix -> load settings -> call handler -> answer callback
+  for (const route of ALL_ROUTES) {
+    if (!data.startsWith(route.prefix)) continue;
+    const value = data.slice(route.prefix.length);
+    const s = await loadSettingsOrReject(ctx, chatId);
+    if (!s) return;
+    const toast = route.handle(value, s, ctx, chatId, msgId);
+    await ctx.answerCallbackQuery(toast || undefined);
     return;
   }
 
-  // Max age preset
-  if (data.startsWith("set:age:")) {
-    const value = parseInt(data.slice(8), 10);
-    const s = loadSettings(chatId);
-    if (!s) {
-      await ctx.answerCallbackQuery("Run /start first.");
-      return;
-    }
-    s.maxJobAgeDays = value;
-    saveSettings(s);
-    await ctx.answerCallbackQuery();
-    // Re-render max age editor with updated value
-    const kb = new InlineKeyboard();
-    for (const v of [1, 2, 3]) kb.text(value === v ? `\u2705 ${v}d` : `${v}d`, `set:age:${v}`);
-    kb.row();
-    const noLim = value === 0 ? "\u2705 No limit" : "No limit";
-    kb.text(value === 7 ? `\u2705 7d` : "7d", `set:age:7`).text(noLim, `set:age:0`);
-    kb.row().text("\u2190 Back", "set:back");
-    editOrSend(
-      ctx,
-      chatId,
-      `\u2699\ufe0f Max age\n\nCurrently: ${value > 0 ? `${value} days` : "no limit"}.\nTap or type a number.`,
-      kb,
-      msgId,
-    ).catch((e) => logError("showAgeEditor", e));
-    return;
-  }
-
-  if (data.startsWith("set:sal:")) {
-    const value = parseInt(data.slice(8), 10);
-    const s = loadSettings(chatId);
-    if (!s) {
-      await ctx.answerCallbackQuery("Run /start first.");
-      return;
-    }
-    s.minSalaryUsd = value;
-    saveSettings(s);
-    await ctx.answerCallbackQuery();
-    showSalaryEditor(ctx, chatId, s, msgId);
-    return;
-  }
-
-  if (data.startsWith("set:rm:")) {
-    const parts = data.slice(7).split(":");
-    const key = parts[0] ?? "";
-    if (!isArrayKey(key)) return;
-    const value = parts.slice(1).join(":");
-    const s = loadSettings(chatId);
-    if (!s) {
-      await ctx.answerCallbackQuery("Run /start first.");
-      return;
-    }
-    s[key] = s[key].filter((item) => item !== value);
-    saveSettings(s);
-    await ctx.answerCallbackQuery(`Removed "${value}"`);
-    showArrayEditor(ctx, chatId, key, s, msgId);
-    return;
-  }
-
+  // Open editor "set:roles" -> show the roles editor
   const raw = data.slice(4);
   if (!(raw in LABELS)) return;
   const key = raw as SettingKey;
-  const s = loadSettings(chatId);
-  if (!s) {
-    await ctx.answerCallbackQuery("Run /start first.");
-    return;
-  }
+  const s = await loadSettingsOrReject(ctx, chatId);
+  if (!s) return;
   await ctx.answerCallbackQuery();
   waitingForInput.delete(chatId);
 
-  const editorMap: Record<string, () => void> = {
-    roles: () =>
-      showToggleEditor(
-        ctx,
-        chatId,
-        "Roles",
-        s.roles,
-        toggleSettingsKb(ROLE_PRESETS, s.roles, "role"),
-        msgId,
-      ),
-    seniority: () =>
-      showToggleEditor(
-        ctx,
-        chatId,
-        "Seniority",
-        s.seniority,
-        toggleSettingsKb(WIZARD_SENIORITY, s.seniority, "sen", false),
-        msgId,
-      ),
-    jobTypes: () =>
-      showToggleEditor(
-        ctx,
-        chatId,
-        "Job Type",
-        s.jobTypes,
-        toggleSettingsKb(JOB_TYPE_PRESETS, s.jobTypes, "jtype", false),
-        msgId,
-      ),
-    locations: () => {
-      waitingForInput.set(chatId, { key: "locations", messageId: msgId!, createdAt: Date.now() });
-      const presets = isRemoteOnly(s.workArrangement) ? REMOTE_LOCATION_PRESETS : LOCATION_SETTINGS_PRESETS;
-      showToggleEditor(
-        ctx,
-        chatId,
-        "Locations",
-        s.locations,
-        toggleSettingsKb(presets, s.locations, "loc"),
-        msgId,
-      );
-    },
-    excludeKeywords: () => {
-      waitingForInput.set(chatId, {
-        key: "excludeKeywords",
-        messageId: msgId!,
-        createdAt: Date.now(),
-      });
-      showToggleEditor(
-        ctx,
-        chatId,
-        "Exclude",
-        s.excludeKeywords,
-        toggleSettingsKb(EXCLUDE_PRESETS, s.excludeKeywords, "excl", false),
-        msgId,
-      );
-    },
-    workArrangement: () => {
-      const wfSet = new Set(s.workArrangement);
-      const wfKb = new InlineKeyboard();
-      for (const p of WORK_FORMAT_PRESETS)
-        wfKb.text(wfSet.has(p) ? `\u2705 ${p}` : p, `set:wf:${p}`).row();
-      wfKb.text("\u2190 Back", "set:back");
-      const sel = s.workArrangement.length > 0 ? s.workArrangement.join(", ") : "any";
-      editOrSend(
-        ctx,
-        chatId,
-        `\u2699\ufe0f Work Format\n\nSelected: ${sel}\nTap to toggle.`,
-        wfKb,
-        msgId,
-      ).catch((e) => logError("showWfEditor", e));
-    },
-    acceptedLanguages: () =>
-      showToggleEditor(
-        ctx,
-        chatId,
-        "Languages",
-        s.acceptedLanguages,
-        toggleSettingsKb(LANGUAGE_PRESETS, s.acceptedLanguages, "lang"),
-        msgId,
-      ),
-    enabledSources: () => {
-      const enabled = s.enabledSources.length > 0 ? s.enabledSources : ALL_SOURCE_NAMES;
-      const srcSet = new Set(enabled);
-      const srcKb = new InlineKeyboard();
-      for (let i = 0; i < ALL_SOURCE_NAMES.length; i += 2) {
-        for (const n of ALL_SOURCE_NAMES.slice(i, i + 2))
-          srcKb.text(srcSet.has(n) ? `\u2705 ${n}` : n, `set:src:${n}`);
-        srcKb.row();
-      }
-      srcKb.text("\u2190 Back", "set:back");
-      editOrSend(
-        ctx,
-        chatId,
-        `\u2699\ufe0f Sources (${enabled.length} of ${ALL_SOURCE_NAMES.length} active)\n\nTap to toggle.`,
-        srcKb,
-        msgId,
-      ).catch((e) => logError("showSrcEditor", e));
-    },
-  };
-  if (editorMap[key]) {
-    editorMap[key]();
-    return;
-  }
-  if (key === "minSalaryUsd") {
-    showSalaryEditor(ctx, chatId, s, msgId);
-    return;
+  // register for text input if this editor accepts typed values
+  const editor = EDITOR_MAP[key];
+  if (isArrayKey(key) || editor?.inputKey) {
+    waitingForInput.set(chatId, {
+      key: editor?.inputKey ?? key,
+      messageId: msgId!,
+      createdAt: Date.now(),
+    });
   }
 
-  if (isArrayKey(key)) {
-    waitingForInput.set(chatId, { key, messageId: msgId!, createdAt: Date.now() });
-    showArrayEditor(ctx, chatId, key, s, msgId);
-    return;
-  }
-
-  waitingForInput.set(chatId, { key, messageId: msgId!, createdAt: Date.now() });
-  const numKey = key as "checkIntervalMinutes" | "maxJobAgeDays";
-  if (numKey === "checkIntervalMinutes") {
-    const cur = s[numKey];
-    const kb = new InlineKeyboard();
-    for (const v of [15, 30, 60])
-      kb.text(cur === v ? `\u2705 ${v} min` : `${v} min`, `set:intv:${v}`);
-    kb.row();
-    for (const v of [120, 360])
-      kb.text(cur === v ? `\u2705 ${v} min` : `${v} min`, `set:intv:${v}`);
-    kb.row().text("\u2190 Back", "set:back");
-    editOrSend(
-      ctx,
-      chatId,
-      `\u2699\ufe0f Interval\n\nCurrently: every ${cur} minutes.\nTap or type a number.`,
-      kb,
-      msgId,
-    ).catch((e) => logError("showNumericEditor", e));
-  } else {
-    const cur = s[numKey];
-    const kb = new InlineKeyboard();
-    for (const v of [1, 2, 3]) kb.text(cur === v ? `\u2705 ${v}d` : `${v}d`, `set:age:${v}`);
-    kb.row();
-    const noLim = cur === 0 ? "\u2705 No limit" : "No limit";
-    kb.text(cur === 7 ? `\u2705 7d` : "7d", `set:age:7`).text(noLim, `set:age:0`);
-    kb.row().text("\u2190 Back", "set:back");
-    editOrSend(
-      ctx,
-      chatId,
-      `\u2699\ufe0f Max age\n\nCurrently: ${cur > 0 ? `${cur} days` : "no limit"}.\nTap or type a number.`,
-      kb,
-      msgId,
-    ).catch((e) => logError("showNumericEditor", e));
-  }
+  showEditorForKey(ctx, chatId, key, s, msgId);
 });

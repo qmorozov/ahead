@@ -1,15 +1,12 @@
 import { Composer, InlineKeyboard } from "grammy";
 import type { Context } from "grammy";
-import {
-  createDefaultSettings,
-  loadSettings,
-  saveSettings,
-} from "../db";
+import { createDefaultSettings, loadSettings, saveSettings } from "../db";
 import { formatSettings } from "./format";
 import { logError } from "../lib/logger";
 import { WIZARD } from "../constants";
 import {
   WizardSession,
+  WizardStep,
   ROLE_PRESETS,
   WIZARD_SENIORITY,
   WORK_FORMAT_PRESETS,
@@ -21,21 +18,34 @@ import {
   PRIMARY_STACK_SIZE,
   STEP_FLOW,
   STEP_BACK,
+  STEP_LABELS,
   WIZ_TOGGLE,
   JOB_TYPE_PRESETS,
   getTechPresets,
   getSalaryPresets,
   isRemoteOnly,
-  replyKb,
-  toggleGrid,
-  stepLabel,
-  setSelectedText,
-  addNavButtons,
 } from "./presets";
-
-// ── State ──────────────────────────────────────────────────────────────────
+import { toggleGrid, replyKb, toRows } from "./keyboards";
 
 export const wizardSessions = new Map<string, WizardSession>();
+
+export function createWizardSession(chatId: string, messageId: number): WizardSession {
+  return {
+    step: "welcome",
+    messageId,
+    chatId,
+    createdAt: Date.now(),
+    roles: new Set(),
+    technologies: [],
+    seniority: new Set(),
+    jobTypes: new Set(),
+    workArrangement: new Set(),
+    locations: new Set(),
+    minSalaryUsd: 0,
+    acceptedLanguages: new Set(["English"]),
+    excludeKeywords: new Set(),
+  };
+}
 
 let onWizardComplete: ((chatId: string) => void) | null = null;
 
@@ -43,162 +53,181 @@ export function setOnWizardComplete(cb: (chatId: string) => void): void {
   onWizardComplete = cb;
 }
 
-// ── Rendering ──────────────────────────────────────────────────────────────
+function stepLabel(step: WizardStep): string {
+  return STEP_LABELS[step] ?? "";
+}
 
-function buildStepContent(session: WizardSession): { text: string; kb: InlineKeyboard } {
-  // Step 1: Roles
-  if (session.step === "roles") {
-    const text =
-      `${stepLabel("roles")}\n\n` +
-      `What kind of role are you looking for?` +
-      `${setSelectedText(session.roles)}`;
-    const kb = toggleGrid(ROLE_PRESETS, session.roles, "role", 3);
-    addNavButtons(kb, "roles", session.roles.size > 0);
-    return { text, kb };
-  }
+function setSelectedText(s: Set<string>): string {
+  return s.size > 0 ? `\n\nSelected: ${[...s].join(", ")}` : "";
+}
 
-  // Step 2: Technologies
-  if (session.step === "technologies") {
-    const techSet = new Set(session.technologies);
-    const presets = getTechPresets(session.roles);
-    const selected =
-      session.technologies.length > 0 ? `\n\n\u2705 ${session.technologies.join(", ")}` : "";
-    const hint = `\n\n\ud83d\udca1 Tap your main technologies first - they get higher priority.`;
-    const text =
-      `${stepLabel("technologies")}\n\n` +
-      `What technologies do you work with?` +
-      `${selected}${hint}`;
-    const kb = new InlineKeyboard();
-    for (let i = 0; i < presets.length; i += 3) {
-      for (const p of presets.slice(i, i + 3))
-        kb.text(techSet.has(p) ? `\u2705 ${p}` : p, `wiz:tech:${p}`);
-      kb.row();
-    }
-    addNavButtons(kb, "technologies", session.technologies.length > 0);
-    return { text, kb };
-  }
+function addNavButtons(
+  kb: InlineKeyboard,
+  step: WizardStep,
+  isLast = false,
+): void {
+  if (STEP_BACK[step]) kb.text("\u2190 Back", "wiz:back");
+  kb.text(isLast ? "\u2705 Finish setup" : "Next \u2192", "wiz:done");
+}
 
-  // Step 3: Seniority
-  if (session.step === "seniority") {
-    const text =
-      `${stepLabel("seniority")}\n\n` +
-      `What levels are you open to?\n` +
-      `Pick several if flexible (e.g. Senior + Middle).` +
-      `${setSelectedText(session.seniority)}`;
-    const kb = toggleGrid(WIZARD_SENIORITY, session.seniority, "sen", 3);
-    addNavButtons(kb, "seniority", session.seniority.size > 0);
-    return { text, kb };
-  }
+type StepRenderer = (session: WizardSession) => { text: string; kb: InlineKeyboard };
 
-  // Step 4: Job Types
-  if (session.step === "jobTypes") {
-    const text =
-      `${stepLabel("jobTypes")}\n\n` +
-      `What type of employment?` +
-      `${setSelectedText(session.jobTypes)}`;
-    const kb = toggleGrid(JOB_TYPE_PRESETS, session.jobTypes, "jt", 3);
-    addNavButtons(kb, "jobTypes", session.jobTypes.size > 0);
-    return { text, kb };
-  }
+function renderRolesStep(session: WizardSession): { text: string; kb: InlineKeyboard } {
+  const text =
+    `${stepLabel("roles")}\n\n` +
+    `What kind of role are you looking for?` +
+    `${setSelectedText(session.roles)}`;
+  const kb = toggleGrid(ROLE_PRESETS, session.roles, "wiz:role", 3);
+  addNavButtons(kb, "roles");
+  return { text, kb };
+}
 
-  // Step 5: Work Format
-  if (session.step === "workFormat") {
-    const text =
-      `${stepLabel("workFormat")}\n\n` +
-      `How do you want to work?` +
-      `${setSelectedText(session.workArrangement)}`;
-    const kb = toggleGrid(WORK_FORMAT_PRESETS, session.workArrangement, "wf", 3);
-    addNavButtons(kb, "workFormat", session.workArrangement.size > 0);
-    return { text, kb };
-  }
+function renderTechnologiesStep(session: WizardSession): { text: string; kb: InlineKeyboard } {
+  const presets = getTechPresets(session.roles);
+  const selected =
+    session.technologies.length > 0 ? `\n\n\u2705 ${session.technologies.join(", ")}` : "";
+  const hint = `\n\n\ud83d\udca1 Tap your main technologies first - they get higher priority.`;
+  const text =
+    `${stepLabel("technologies")}\n\n` +
+    `What technologies do you work with?` +
+    `${selected}${hint}`;
+  const kb = toggleGrid(presets, session.technologies, "wiz:tech", 3);
+  addNavButtons(kb, "technologies");
+  return { text, kb };
+}
 
-  // Step 6: Location
-  if (session.step === "locations") {
-    if (isRemoteOnly(session.workArrangement)) {
-      const text =
-        `${stepLabel("locations")}\n\n` +
-        `Any region restrictions?\n` +
-        `Skip = anywhere.` +
-        `${setSelectedText(session.locations)}`;
-      const kb = toggleGrid(REMOTE_LOCATION_PRESETS, session.locations, "loc", 2);
-      addNavButtons(kb, "locations", session.locations.size > 0);
-      return { text, kb };
-    }
+function renderSeniorityStep(session: WizardSession): { text: string; kb: InlineKeyboard } {
+  const text =
+    `${stepLabel("seniority")}\n\n` +
+    `What levels are you open to?\n` +
+    `Pick several if flexible (e.g. Senior + Middle).` +
+    `${setSelectedText(session.seniority)}`;
+  const kb = toggleGrid(WIZARD_SENIORITY, session.seniority, "wiz:sen", 3);
+  addNavButtons(kb, "seniority");
+  return { text, kb };
+}
 
-    const selectedRegion = [...session.locations].find((l) => REGION_COUNTRIES[l]);
-    const kb = new InlineKeyboard();
+function renderJobTypesStep(session: WizardSession): { text: string; kb: InlineKeyboard } {
+  const text =
+    `${stepLabel("jobTypes")}\n\n` +
+    `What type of employment?` +
+    `${setSelectedText(session.jobTypes)}`;
+  const kb = toggleGrid(JOB_TYPE_PRESETS, session.jobTypes, "wiz:jt", 3);
+  addNavButtons(kb, "jobTypes");
+  return { text, kb };
+}
 
-    if (!selectedRegion) {
-      const text =
-        `${stepLabel("locations")}\n\n` +
-        `Pick your region, then select a country.\n` +
-        `Or type your own.` +
-        `${setSelectedText(session.locations)}`;
-      for (const r of Object.keys(REGION_COUNTRIES)) {
-        kb.text(session.locations.has(r) ? `\u2705 ${r}` : r, `wiz:loc:${r}`);
-      }
-      kb.row();
-      addNavButtons(kb, "locations", session.locations.size > 0);
-      return { text, kb };
-    }
+function renderWorkFormatStep(session: WizardSession): { text: string; kb: InlineKeyboard } {
+  const text =
+    `${stepLabel("workFormat")}\n\n` +
+    `How do you want to work?` +
+    `${setSelectedText(session.workArrangement)}`;
+  const kb = toggleGrid(WORK_FORMAT_PRESETS, session.workArrangement, "wiz:wf", 3);
+  addNavButtons(kb, "workFormat");
+  return { text, kb };
+}
 
-    const countries = REGION_COUNTRIES[selectedRegion] ?? [];
+function renderLocationsStep(session: WizardSession): { text: string; kb: InlineKeyboard } {
+  if (isRemoteOnly(session.workArrangement)) {
     const text =
       `${stepLabel("locations")}\n\n` +
-      `Top IT hubs in ${selectedRegion}.\n` +
+      `Any region restrictions?\n` +
+      `Skip = anywhere.` +
+      `${setSelectedText(session.locations)}`;
+    const kb = toggleGrid(REMOTE_LOCATION_PRESETS, session.locations, "wiz:loc", 2);
+    addNavButtons(kb, "locations");
+    return { text, kb };
+  }
+
+  const selectedRegion = [...session.locations].find((l) => REGION_COUNTRIES[l]);
+  const kb = new InlineKeyboard();
+
+  if (!selectedRegion) {
+    const text =
+      `${stepLabel("locations")}\n\n` +
+      `Pick your region, then select a country.\n` +
       `Or type your own.` +
       `${setSelectedText(session.locations)}`;
-    kb.text(`\u2705 ${selectedRegion}`, `wiz:loc:${selectedRegion}`).row();
-    for (let i = 0; i < countries.length; i += 2) {
-      for (const c of countries.slice(i, i + 2))
-        kb.text(session.locations.has(c) ? `\u2705 ${c}` : c, `wiz:loc:${c}`);
-      kb.row();
+    for (const r of Object.keys(REGION_COUNTRIES)) {
+      kb.text(session.locations.has(r) ? `\u2705 ${r}` : r, `wiz:loc:${r}`);
     }
-    addNavButtons(kb, "locations", session.locations.size > 0);
+    kb.row();
+    addNavButtons(kb, "locations");
     return { text, kb };
   }
 
-  // Step 7: Salary
-  if (session.step === "salary") {
-    const salaryPresets = getSalaryPresets(session.locations);
-    const current = session.minSalaryUsd;
-    const sel = current > 0 ? `\n\nSelected: $${current / 1000}k+` : "";
-    const text =
-      `${stepLabel("salary")}\n\n` +
-      `Minimum annual salary (USD)?\n` +
-      `Jobs without salary info will still appear.` +
-      `${sel}`;
-    const kb = new InlineKeyboard();
-    for (let i = 0; i < salaryPresets.length; i += 3) {
-      for (const p of salaryPresets.slice(i, i + 3))
-        kb.text(current === p.value ? `\u2705 ${p.label}` : p.label, `wiz:sal:${p.value}`);
-      kb.row();
-    }
-    addNavButtons(kb, "salary", true);
-    return { text, kb };
+  const countries = REGION_COUNTRIES[selectedRegion] ?? [];
+  const text =
+    `${stepLabel("locations")}\n\n` +
+    `Top IT hubs in ${selectedRegion}.\n` +
+    `Or type your own.` +
+    `${setSelectedText(session.locations)}`;
+  kb.text(`\u2705 ${selectedRegion}`, `wiz:loc:${selectedRegion}`).row();
+  for (const row of toRows(countries, 2)) {
+    for (const c of row) kb.text(session.locations.has(c) ? `\u2705 ${c}` : c, `wiz:loc:${c}`);
+    kb.row();
   }
+  addNavButtons(kb, "locations");
+  return { text, kb };
+}
 
-  // Step 8: Languages
-  if (session.step === "languages") {
-    const text =
-      `${stepLabel("languages")}\n\n` +
-      `Which languages are OK for job descriptions?\n` +
-      `English is always on. Type your own if needed.` +
-      `${setSelectedText(session.acceptedLanguages)}`;
-    const kb = toggleGrid(LANGUAGE_PRESETS, session.acceptedLanguages, "lang", 3);
-    addNavButtons(kb, "languages", true);
-    return { text, kb };
+function renderSalaryStep(session: WizardSession): { text: string; kb: InlineKeyboard } {
+  const salaryPresets = getSalaryPresets(session.locations);
+  const current = session.minSalaryUsd;
+  const sel = current > 0 ? `\n\nSelected: $${current / 1000}k+` : "";
+  const text =
+    `${stepLabel("salary")}\n\n` +
+    `Minimum annual salary (USD)?\n` +
+    `Jobs without salary info will still appear.` +
+    `${sel}`;
+  const kb = new InlineKeyboard();
+  for (const row of toRows(salaryPresets, 3)) {
+    for (const p of row)
+      kb.text(current === p.value ? `\u2705 ${p.label}` : p.label, `wiz:sal:${p.value}`);
+    kb.row();
   }
+  addNavButtons(kb, "salary");
+  return { text, kb };
+}
 
-  // Step 9: Exclude
+function renderLanguagesStep(session: WizardSession): { text: string; kb: InlineKeyboard } {
+  const text =
+    `${stepLabel("languages")}\n\n` +
+    `Which languages are OK for job descriptions?\n` +
+    `English is always on. Type your own if needed.` +
+    `${setSelectedText(session.acceptedLanguages)}`;
+  const kb = toggleGrid(LANGUAGE_PRESETS, session.acceptedLanguages, "wiz:lang", 3);
+  addNavButtons(kb, "languages");
+  return { text, kb };
+}
+
+function renderExcludesStep(session: WizardSession): { text: string; kb: InlineKeyboard } {
   const text =
     `${stepLabel("excludes")}\n\n` +
     `Anything to avoid?\n` +
     `Tap or type your own.` +
     `${setSelectedText(session.excludeKeywords)}`;
-  const kb = toggleGrid(EXCLUDE_PRESETS, session.excludeKeywords, "excl", 3);
-  addNavButtons(kb, "excludes", true, true);
+  const kb = toggleGrid(EXCLUDE_PRESETS, session.excludeKeywords, "wiz:excl", 3);
+  addNavButtons(kb, "excludes", true);
   return { text, kb };
+}
+
+const STEP_RENDERERS: Record<string, StepRenderer> = {
+  roles: renderRolesStep,
+  technologies: renderTechnologiesStep,
+  seniority: renderSeniorityStep,
+  jobTypes: renderJobTypesStep,
+  workFormat: renderWorkFormatStep,
+  locations: renderLocationsStep,
+  salary: renderSalaryStep,
+  languages: renderLanguagesStep,
+  excludes: renderExcludesStep,
+};
+
+function buildStepContent(session: WizardSession): { text: string; kb: InlineKeyboard } {
+  const render = STEP_RENDERERS[session.step];
+  if (!render) throw new Error(`Unknown wizard step: ${session.step}`);
+  return render(session);
 }
 
 export async function renderWizardStep(ctx: Context, session: WizardSession): Promise<void> {
@@ -252,16 +281,12 @@ async function finishWizard(ctx: Context, session: WizardSession): Promise<void>
   if (onWizardComplete) onWizardComplete(chatId);
 }
 
-// ── Sweep stale wizard sessions ────────────────────────────────────────────
-
 export function sweepStaleWizards(): void {
   const now = Date.now();
   for (const [id, s] of wizardSessions) {
     if (now - s.createdAt > WIZARD.TTL_MS) wizardSessions.delete(id);
   }
 }
-
-// ── Callback handler ───────────────────────────────────────────────────────
 
 export const wizardCallbacks = new Composer<Context>();
 
@@ -294,7 +319,7 @@ wizardCallbacks.callbackQuery(/^wiz:/, async (ctx) => {
   if (data === "wiz:done" || data === "wiz:skip") {
     const next = STEP_FLOW[session.step];
     if (!next || next === "finish") {
-      // Must have at least roles or technologies to be onboarded
+      // must have at least roles or technologies to be onboarded
       if (session.roles.size === 0 && session.technologies.length === 0) {
         session.step = "roles";
         await renderWizardStep(ctx, session);
@@ -308,7 +333,6 @@ wizardCallbacks.callbackQuery(/^wiz:/, async (ctx) => {
     return;
   }
 
-  // Salary selection
   const salMatch = data.match(/^wiz:sal:(\d+)$/);
   if (salMatch) {
     session.minSalaryUsd = parseInt(salMatch[1]!, 10);
@@ -316,7 +340,6 @@ wizardCallbacks.callbackQuery(/^wiz:/, async (ctx) => {
     return;
   }
 
-  // Individual tech toggle
   const techMatch = data.match(/^wiz:tech:(.+)$/);
   if (techMatch) {
     const value = techMatch[1]!;
@@ -327,12 +350,13 @@ wizardCallbacks.callbackQuery(/^wiz:/, async (ctx) => {
     return;
   }
 
-  // Set-based toggles (roles, seniority, jobTypes, locations, excludes)
+  // set based toggles (roles, seniority, jobTypes, locations, excludes)
   const toggleMatch = data.match(/^wiz:(role|sen|jt|wf|loc|lang|excl):(.+)$/);
   if (toggleMatch) {
-    const field = WIZ_TOGGLE[toggleMatch[1]!]!;
+    const field = WIZ_TOGGLE[toggleMatch[1]!];
+    if (!field) return;
     const value = toggleMatch[2]!;
-    const set = session[field] as Set<string>;
+    const set = session[field];
 
     if (field === "locations") {
       const lower = value.toLowerCase();
@@ -341,7 +365,7 @@ wizardCallbacks.callbackQuery(/^wiz:/, async (ctx) => {
         session.locations.add("Anywhere");
       } else if (set.has(value)) {
         set.delete(value);
-        // Deselecting a region: also remove its countries
+        // deselecting a region: also remove its countries
         const regionCountries = REGION_COUNTRIES[value];
         if (regionCountries) for (const c of regionCountries) set.delete(c);
       } else {

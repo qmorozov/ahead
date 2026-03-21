@@ -1,7 +1,17 @@
+import { z } from "zod";
 import { db } from "./connection";
 
+const SlugRowSchema = z.object({ slug: z.string() });
+const CountRowSchema = z.object({ cnt: z.number() });
+const EtagRowSchema = z.object({ etag: z.string().nullable() });
+
 function slugs(rows: unknown[]): string[] {
-  return (rows as Array<{ slug: string }>).map((r) => r.slug);
+  const result: string[] = [];
+  for (const row of rows) {
+    const parsed = SlugRowSchema.safeParse(row);
+    if (parsed.success) result.push(parsed.data.slug);
+  }
+  return result;
 }
 
 const sql = {
@@ -36,14 +46,17 @@ const upsertBatch = db.transaction(
   },
 );
 
-export function seedBoards(slugs: string[], platform: string): void {
-  const existing = (sql.count.get(platform) as { cnt: number }).cnt;
-  if (existing >= slugs.length) {
-    // Re-seed: reactivate boards killed by transient errors
+/**
+ * Seed board slugs for a platform. If already seeded, reactivates any disabled boards.
+ * Idempotent: safe to call on every startup.
+ */
+export function seedBoards(boardSlugs: string[], platform: string): void {
+  const existing = CountRowSchema.parse(sql.count.get(platform)).cnt;
+  if (existing >= boardSlugs.length) {
     sql.reactivateAll.run(platform);
     return;
   }
-  upsertBatch(slugs.map((slug) => ({ slug, platform, active: 1, job_count: 0 })));
+  upsertBatch(boardSlugs.map((slug) => ({ slug, platform, active: 1, job_count: 0 })));
 }
 
 export function getActiveSlugs(platform: string): string[] {
@@ -64,8 +77,9 @@ export function updateBoard(
 }
 
 export function getEtag(slug: string, platform: string): string | null {
-  const row = sql.getEtag.get(slug, platform) as { etag: string | null } | undefined;
-  return row?.etag ?? null;
+  const row = sql.getEtag.get(slug, platform);
+  if (!row) return null;
+  return EtagRowSchema.parse(row).etag;
 }
 
 export function setEtag(slug: string, platform: string, etag: string | null): void {

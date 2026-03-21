@@ -1,24 +1,35 @@
 import axios from "axios";
 import { HTTP_TIMEOUT } from "../config";
-import { rssParser } from "../lib/utils";
+import { rssParser, RssItemSchema } from "../lib/utils";
 import { Job } from "../types";
+import { logOperationalError } from "../lib/errors";
 
 const FEED_URL = "https://djinni.co/jobs/rss/";
 
+/** Fetch jobs from the Djinni RSS feed. Company/location resolved via enrichment. */
 export async function fetchDjinni(): Promise<Job[]> {
   const feed = await rssParser.parseURL(FEED_URL);
+  const jobs: Job[] = [];
 
-  return feed.items.map((item) => ({
-    id: item.guid ?? item.link ?? "",
-    title: item.title ?? "",
-    company: "", // resolved via enrichment (JSON-LD)
-    location: "",
-    description: item.content || item.contentSnippet,
-    url: item.link ?? "",
-    source: "Djinni",
-    tags: item.categories?.filter(Boolean) ?? [],
-    publishedAt: item.isoDate ?? new Date().toISOString(),
-  }));
+  for (const raw of feed.items) {
+    const result = RssItemSchema.safeParse(raw);
+    if (!result.success) continue;
+    const item = result.data;
+
+    jobs.push({
+      id: item.guid ?? item.link ?? "",
+      title: item.title ?? "",
+      company: "", // resolved via enrichment (JSON-LD)
+      location: "",
+      description: item.content || item.contentSnippet,
+      url: item.link ?? "",
+      source: "Djinni",
+      tags: item.categories?.filter(Boolean) ?? [],
+      publishedAt: item.isoDate ?? new Date().toISOString(),
+    });
+  }
+
+  return jobs;
 }
 
 // Company name is always resolved via enrichment (JSON-LD from job page).
@@ -50,11 +61,13 @@ function parseJsonLd(html: string): EnrichmentData {
       company: ld.hiringOrganization?.name ?? "",
       location: ld.jobLocationType === "TELECOMMUTE" ? "Remote" : "",
     };
-  } catch {
+  } catch (err) {
+    logOperationalError("Djinni JSON-LD", err);
     return { company: "", location: "" };
   }
 }
 
+/** Fetch company + location data from a Djinni job page via JSON-LD. Cached per URL. */
 export async function fetchDjinniEnrichment(url: string): Promise<EnrichmentData> {
   const cached = enrichCache.get(url);
   if (cached) return cached;
@@ -64,8 +77,8 @@ export async function fetchDjinniEnrichment(url: string): Promise<EnrichmentData
     const enriched = parseJsonLd(typeof data === "string" ? data : "");
     setCache(url, enriched);
     return enriched;
-  } catch {
-    // On failure, return stale cached data if available; don't cache the failure
+  } catch (err) {
+    logOperationalError("Djinni enrich", err);
     return cached ?? { company: "", location: "" };
   }
 }

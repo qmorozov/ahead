@@ -5,7 +5,9 @@ import { z } from "zod";
 dotenv.config();
 
 const EnvSchema = z.object({
-  TELEGRAM_BOT_TOKEN: z.string().min(1, "Missing TELEGRAM_BOT_TOKEN — create a bot via @BotFather, then add the token to .env"),
+  TELEGRAM_BOT_TOKEN: z
+    .string()
+    .min(1, "Missing TELEGRAM_BOT_TOKEN - create a bot via @BotFather, then add the token to .env"),
   GROQ_API_KEY: z.string().default(""),
   CEREBRAS_API_KEY: z.string().default(""),
   ADZUNA_APP_ID: z.string().default(""),

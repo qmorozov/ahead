@@ -1,29 +1,31 @@
 import crypto from "crypto";
-import { bot } from "./instance";
+import type { Api } from "grammy";
 import { Job, ParsedJob, jobKey } from "../types";
 import { formatMessage, formatDigestItem, formatDigest } from "./format";
 import {
   PendingJobEntry,
   savePendingJobBatch,
-  deletePendingJob,
+  deletePendingJobBatch,
   loadAllPendingJobs,
   pruneExpiredPendingJobs,
 } from "../db";
 import { log, logError } from "../lib/logger";
 import { sleep } from "../lib/utils";
 import { DELIVERY } from "../constants";
+import { toRows } from "./keyboards";
+
+let api: Api;
 
 const pendingJobs = new Map<string, PendingJobEntry>();
 const STORE_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_PENDING = 500;
 
-for (const entry of loadAllPendingJobs()) {
-  pendingJobs.set(entry.id, entry);
-}
-if (pendingJobs.size > 0) log(`Restored ${pendingJobs.size} pending jobs`);
-
-function generateId(): string {
-  return crypto.randomBytes(6).toString("base64url");
+export function initPendingJobs(botApi: Api): void {
+  api = botApi;
+  for (const entry of loadAllPendingJobs()) {
+    pendingJobs.set(entry.id, entry);
+  }
+  if (pendingJobs.size > 0) log(`Restored ${pendingJobs.size} pending jobs`);
 }
 
 function cleanupPendingJobs(): void {
@@ -34,10 +36,8 @@ function cleanupPendingJobs(): void {
   if (pendingJobs.size > MAX_PENDING) {
     const excess = pendingJobs.size - MAX_PENDING;
     const keys = [...pendingJobs.keys()].slice(0, excess);
-    for (const key of keys) {
-      pendingJobs.delete(key);
-      deletePendingJob(key);
-    }
+    for (const key of keys) pendingJobs.delete(key);
+    deletePendingJobBatch(keys);
   }
   pruneExpiredPendingJobs(cutoff);
 }
@@ -66,13 +66,21 @@ async function sendWithRetry(label: string, fn: () => Promise<unknown>): Promise
   return false;
 }
 
+/**
+ * Send a single job message with a "View job posting" button
+ *
+ * @param chatId - Telegram chat to send to
+ * @param job - The job listing to format and send
+ * @param parsed - LLM parse result; enriches the message with structured requirements/tags
+ * @returns true if Telegram accepted the message
+ */
 export async function sendJob(
   chatId: string,
   job: Job,
   parsed: ParsedJob | null = null,
 ): Promise<boolean> {
   return sendWithRetry("Telegram", () =>
-    bot.api.sendMessage(chatId, formatMessage(job, parsed), {
+    api.sendMessage(chatId, formatMessage(job, parsed), {
       parse_mode: "HTML",
       link_preview_options: { is_disabled: true },
       reply_markup: {
@@ -100,42 +108,50 @@ function buildDigestPage(
   signalsMap: Map<string, string[]> = new Map(),
 ): DigestPage {
   const items: string[] = [];
-  const buttons: Array<Array<{ text: string; callback_data: string }>> = [];
+  const flatButtons: Array<{ text: string; callback_data: string }> = [];
   const entries: PendingJobEntry[] = [];
-  let buttonRow: Array<{ text: string; callback_data: string }> = [];
 
   for (let i = 0; i < pageJobs.length; i++) {
-    const job = pageJobs[i];
-    if (!job) continue;
+    const job = pageJobs[i]!;
     const globalIndex = pageOffset + i + 1;
     const key = jobKey(job);
     const parsed = parsedMap.get(key) ?? null;
     const signals = signalsMap.get(key);
     items.push(formatDigestItem(globalIndex, job, parsed, signals));
 
-    const id = generateId();
+    const id = crypto.randomBytes(6).toString("base64url");
     const entry: PendingJobEntry = { id, chatId, job, parsed, storedAt: Date.now() };
     pendingJobs.set(id, entry);
     entries.push(entry);
-
-    buttonRow.push({ text: String(globalIndex), callback_data: `job:${id}` });
-    if (buttonRow.length === BUTTONS_PER_ROW || i === pageJobs.length - 1) {
-      buttons.push(buttonRow);
-      buttonRow = [];
-    }
+    flatButtons.push({ text: String(globalIndex), callback_data: `job:${id}` });
   }
 
+  // Trim from the end until the message fits all three arrays stay in sync
   const renderText = () => (pageOffset === 0 ? formatDigest(items, totalJobs) : items.join("\n\n"));
   let text = renderText();
-  // Remove items from the end until the message fits (avoids cutting HTML tags)
   while (items.length > 1 && text.length > DELIVERY.MAX_LENGTH) {
     items.pop();
+    entries.pop();
+    flatButtons.pop();
     text = renderText();
   }
 
-  return { text, buttons, jobs: pageJobs, entries };
+  return {
+    text,
+    buttons: toRows(flatButtons, BUTTONS_PER_ROW),
+    jobs: pageJobs.slice(0, items.length),
+    entries,
+  };
 }
 
+/**
+ * Send jobs as a paginated digest. Returns only the jobs Telegram accepted
+ *
+ * @param chatId - Telegram chat to send to
+ * @param jobs - Jobs to deliver, already sorted by relevance
+ * @param parsedMap - LLM parse results keyed by jobKey, used for richer formatting
+ * @param signalsMap - Scoring signals keyed by jobKey, shown as "why matched" hints
+ */
 export async function sendJobs(
   chatId: string,
   jobs: Job[],
@@ -153,7 +169,7 @@ export async function sendJobs(
     allEntries.push(...page.entries);
 
     const pageSent = await sendWithRetry("Telegram digest", () =>
-      bot.api.sendMessage(chatId, page.text, {
+      api.sendMessage(chatId, page.text, {
         parse_mode: "HTML",
         link_preview_options: { is_disabled: true },
         reply_markup: { inline_keyboard: page.buttons },
@@ -161,9 +177,7 @@ export async function sendJobs(
     );
     if (pageSent) sent.push(...page.jobs);
 
-    if (offset + DELIVERY.PAGE_SIZE < jobs.length) {
-      await sleep(1000);
-    }
+    if (offset + DELIVERY.PAGE_SIZE < jobs.length) await sleep(1000);
   }
 
   savePendingJobBatch(allEntries);

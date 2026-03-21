@@ -3,28 +3,19 @@ import type { Context } from "grammy";
 import { loadSettings, saveSettings } from "../db";
 import { parseCommaSeparated, parseCommaSeparatedRaw } from "../lib/utils";
 import { WIZARD } from "../constants";
-import type { WizardStep, ToggleField } from "./presets";
-import {
-  EXCLUDE_PRESETS,
-  REMOTE_LOCATION_PRESETS,
-  LOCATION_SETTINGS_PRESETS,
-  isRemoteOnly,
-} from "./presets";
+import type { ToggleField } from "./presets";
 import { wizardSessions, renderWizardStep, setOnWizardComplete } from "./wizard";
 import { wizardCallbacks } from "./wizard";
 import {
   waitingForInput,
   isArrayKey,
   showSettings,
-  showArrayEditor,
-  showToggleEditor,
-  toggleSettingsKb,
+  showEditorForKey,
   settingsCallbacks,
-  setOnIntervalChanged as setOnIntervalChanged_settings,
+  setOnIntervalChanged,
+  fireIntervalChanged,
 } from "./settings";
 import { commandHandlers } from "./commands";
-
-// ── Compose all sub-handlers ───────────────────────────────────────────────
 
 export const handlers = new Composer<Context>();
 
@@ -32,50 +23,42 @@ handlers.use(commandHandlers);
 handlers.use(wizardCallbacks);
 handlers.use(settingsCallbacks);
 
-// ── Text input handler ─────────────────────────────────────────────────────
-// Lives here because it bridges wizard sessions (wizard.ts) and
-// settings input (settings.ts) — the only cross-cutting concern.
-
+// free-text input bridges wizard and settings (both accept typed values)
 handlers.on("message:text", async (ctx) => {
   const chatId = String(ctx.chat.id);
   const text = ctx.message.text;
   if (text.startsWith("/")) return;
 
+  // Steps that accept typed text and the session field they write to
+  const TEXT_FIELDS: Record<string, ToggleField | "technologies"> = {
+    roles: "roles",
+    technologies: "technologies",
+    seniority: "seniority",
+    locations: "locations",
+    languages: "acceptedLanguages",
+    excludes: "excludeKeywords",
+  };
+
   const session = wizardSessions.get(chatId);
   if (session) {
-    const textSteps: WizardStep[] = [
-      "roles",
-      "technologies",
-      "seniority",
-      "locations",
-      "languages",
-      "excludes",
-    ];
-    if (!textSteps.includes(session.step)) {
+    const field = TEXT_FIELDS[session.step];
+    if (!field) {
       await ctx.deleteMessage().catch(() => {});
       return;
     }
-    const isTech = session.step === "technologies";
-    const items = (isTech ? parseCommaSeparated(text) : parseCommaSeparatedRaw(text)).filter(
-      (i) => i.length <= WIZARD.MAX_ITEM_LENGTH,
-    );
+
+    const items = (
+      field === "technologies" ? parseCommaSeparated(text) : parseCommaSeparatedRaw(text)
+    ).filter((i) => i.length <= WIZARD.MAX_ITEM_LENGTH);
     if (items.length === 0) return;
 
-    if (isTech) {
+    if (field === "technologies") {
       for (const item of items) {
         if (session.technologies.length >= WIZARD.MAX_ARRAY_ITEMS) break;
         if (!session.technologies.includes(item)) session.technologies.push(item);
       }
     } else {
-      const fieldMap: Record<string, ToggleField> = {
-        roles: "roles",
-        seniority: "seniority",
-        locations: "locations",
-        languages: "acceptedLanguages",
-        excludes: "excludeKeywords",
-      };
-      const field = fieldMap[session.step]!;
-      const set = session[field] as Set<string>;
+      const set = session[field];
       for (const item of items) {
         if (set.size >= WIZARD.MAX_ARRAY_ITEMS) break;
         set.add(item);
@@ -104,50 +87,17 @@ handlers.on("message:text", async (ctx) => {
     s[pending.key] = num;
     saveSettings(s);
     showSettings(ctx, chatId, s, pending.messageId);
-    if (pending.key === "checkIntervalMinutes" && onIntervalChangedCb) onIntervalChangedCb();
+    if (pending.key === "checkIntervalMinutes") fireIntervalChanged();
   } else if (isArrayKey(pending.key)) {
     const parser = pending.key === "keywords" ? parseCommaSeparated : parseCommaSeparatedRaw;
     const newItems = parser(text).filter((i) => i.length <= WIZARD.MAX_ITEM_LENGTH);
     const merged = new Set([...s[pending.key], ...newItems]);
     s[pending.key] = [...merged].slice(0, WIZARD.MAX_ARRAY_ITEMS);
     saveSettings(s);
-    if (pending.key === "excludeKeywords") {
-      showToggleEditor(
-        ctx,
-        chatId,
-        "Exclude",
-        s.excludeKeywords,
-        toggleSettingsKb(EXCLUDE_PRESETS, s.excludeKeywords, "excl", false),
-        pending.messageId,
-      );
-    } else if (pending.key === "locations") {
-      const isRem = isRemoteOnly(s.workArrangement);
-      showToggleEditor(
-        ctx,
-        chatId,
-        "Locations",
-        s.locations,
-        toggleSettingsKb(
-          isRem ? REMOTE_LOCATION_PRESETS : LOCATION_SETTINGS_PRESETS,
-          s.locations,
-          "loc",
-        ),
-        pending.messageId,
-      );
-    } else {
-      showArrayEditor(ctx, chatId, pending.key, s, pending.messageId);
-    }
+    showEditorForKey(ctx, chatId, pending.key, s, pending.messageId);
   }
 });
 
-// ── Re-exported callback setters ───────────────────────────────────────────
-// index.ts imports these from handlers.ts — we keep the same public API.
-
-let onIntervalChangedCb: (() => void) | null = null;
-
+// re-exported so index.ts can wire callbacks through a single import
 export { setOnWizardComplete };
-
-export function setOnIntervalChanged(cb: () => void): void {
-  onIntervalChangedCb = cb;
-  setOnIntervalChanged_settings(cb);
-}
+export { setOnIntervalChanged };

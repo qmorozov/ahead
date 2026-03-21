@@ -1,7 +1,27 @@
+import { z } from "zod";
 import { db } from "./connection";
+import { warn } from "../lib/logger";
 
-function jsonArray(raw: unknown): string[] {
-  if (typeof raw !== "string") return [];
+const SettingsRowSchema = z.object({
+  chat_id: z.string(),
+  roles: z.string().default("[]"),
+  keywords: z.string().default("[]"),
+  primary_stack: z.string().default("[]"),
+  exclude_keywords: z.string().default("[]"),
+  locations: z.string().default("[]"),
+  seniority: z.string().default("[]"),
+  job_types: z.string().default("[]"),
+  work_arrangement: z.string().default("[]"),
+  accepted_languages: z.string().default('["English"]'),
+  enabled_sources: z.string().default("[]"),
+  min_salary_usd: z.number().default(0),
+  check_interval_minutes: z.number().default(30),
+  max_job_age_days: z.number().default(2),
+  paused: z.number().default(0),
+  jobs_sent: z.number().default(0),
+});
+
+function jsonArray(raw: string): string[] {
   try {
     const arr = JSON.parse(raw);
     return Array.isArray(arr) ? arr : [];
@@ -57,6 +77,7 @@ export function isOnboarded(settings: UserSettings): boolean {
 const sql = {
   get: db.prepare(`SELECT * FROM settings WHERE chat_id = ?`),
   getAll: db.prepare(`SELECT * FROM settings`),
+  getOnboarded: db.prepare(`SELECT * FROM settings WHERE keywords != '[]' OR roles != '[]'`),
   upsert: db.prepare(`
     INSERT INTO settings (chat_id, roles, keywords, primary_stack, exclude_keywords, locations, seniority, job_types,
       work_arrangement, accepted_languages, enabled_sources, min_salary_usd, check_interval_minutes, max_job_age_days, paused, jobs_sent)
@@ -73,9 +94,9 @@ const sql = {
   pause: db.prepare(`UPDATE settings SET paused = 1 WHERE chat_id = ?`),
 };
 
-function rowToSettings(row: Record<string, unknown>): UserSettings {
+function rowToSettings(row: z.infer<typeof SettingsRowSchema>): UserSettings {
   return {
-    chatId: row.chat_id as string,
+    chatId: row.chat_id,
     roles: jsonArray(row.roles),
     keywords: jsonArray(row.keywords),
     primaryStack: jsonArray(row.primary_stack),
@@ -86,17 +107,36 @@ function rowToSettings(row: Record<string, unknown>): UserSettings {
     workArrangement: jsonArray(row.work_arrangement),
     acceptedLanguages: jsonArray(row.accepted_languages),
     enabledSources: jsonArray(row.enabled_sources),
-    minSalaryUsd: (row.min_salary_usd as number) ?? 0,
-    checkIntervalMinutes: row.check_interval_minutes as number,
-    maxJobAgeDays: row.max_job_age_days as number,
-    paused: (row.paused as number) === 1,
-    jobsSent: (row.jobs_sent as number) ?? 0,
+    minSalaryUsd: row.min_salary_usd,
+    checkIntervalMinutes: row.check_interval_minutes,
+    maxJobAgeDays: row.max_job_age_days,
+    paused: row.paused === 1,
+    jobsSent: row.jobs_sent,
   };
 }
 
+function parseRows(rows: unknown[]): UserSettings[] {
+  const result: UserSettings[] = [];
+  for (const raw of rows) {
+    const parsed = SettingsRowSchema.safeParse(raw);
+    if (parsed.success) {
+      result.push(rowToSettings(parsed.data));
+    } else {
+      warn(`Skipping invalid settings row: ${parsed.error.issues[0]?.message ?? "unknown"}`);
+    }
+  }
+  return result;
+}
+
 export function loadSettings(chatId: string): UserSettings | null {
-  const row = sql.get.get(chatId) as Record<string, unknown> | undefined;
-  return row ? rowToSettings(row) : null;
+  const row = sql.get.get(chatId);
+  if (!row) return null;
+  const parsed = SettingsRowSchema.safeParse(row);
+  if (!parsed.success) {
+    warn(`Invalid settings row for ${chatId}: ${parsed.error.issues[0]?.message ?? "unknown"}`);
+    return null;
+  }
+  return rowToSettings(parsed.data);
 }
 
 export function saveSettings(settings: UserSettings): void {
@@ -120,7 +160,11 @@ export function saveSettings(settings: UserSettings): void {
 }
 
 export function loadAllSettings(): UserSettings[] {
-  return (sql.getAll.all() as Record<string, unknown>[]).map(rowToSettings);
+  return parseRows(sql.getAll.all());
+}
+
+export function loadOnboardedSettings(): UserSettings[] {
+  return parseRows(sql.getOnboarded.all());
 }
 
 export function incrementJobsSent(chatId: string, count: number): void {
@@ -131,12 +175,18 @@ export function markUserBlocked(chatId: string): void {
   sql.pause.run(chatId);
 }
 
-// Deletes all user data across tables in a single transaction
+const deleteStatements = {
+  seenJobs: db.prepare(`DELETE FROM seen_jobs WHERE chat_id = ?`),
+  seenTitles: db.prepare(`DELETE FROM seen_titles WHERE chat_id = ?`),
+  pendingJobs: db.prepare(`DELETE FROM pending_jobs WHERE chat_id = ?`),
+  settings: db.prepare(`DELETE FROM settings WHERE chat_id = ?`),
+};
+
 const deleteUserDataTx = db.transaction((chatId: string) => {
-  db.prepare(`DELETE FROM seen_jobs WHERE chat_id = ?`).run(chatId);
-  db.prepare(`DELETE FROM seen_titles WHERE chat_id = ?`).run(chatId);
-  db.prepare(`DELETE FROM pending_jobs WHERE chat_id = ?`).run(chatId);
-  db.prepare(`DELETE FROM settings WHERE chat_id = ?`).run(chatId);
+  deleteStatements.seenJobs.run(chatId);
+  deleteStatements.seenTitles.run(chatId);
+  deleteStatements.pendingJobs.run(chatId);
+  deleteStatements.settings.run(chatId);
 });
 
 export function deleteUserData(chatId: string): void {

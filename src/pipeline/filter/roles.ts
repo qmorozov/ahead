@@ -7,7 +7,7 @@ interface RoleConfig {
   domains: string[];
 }
 
-// Generic "Software Engineer/Developer" pattern — matches any dev role the user selected.
+// Generic "Software Engineer/Developer" pattern matches any dev role the user selected.
 // Used as a fallback so these titles don't get a NO_ROLE penalty.
 export const GENERIC_DEV_PATTERN =
   /^(?!.*(?:front|back|full.?stack|mobile|ios|android|data|ml|ai|devops|sre|infra|platform|cloud|design|product|qa|quality|test|sdet)).*\b(?:software|web)\s*(?:engineer|developer|architect)\b/i;
@@ -67,6 +67,7 @@ export const ROLE_CONFIGS: Record<string, RoleConfig> = {
   },
 };
 
+/** Get search terms for the given roles (e.g. "frontend" → ["frontend", "front-end", "UI developer"]). */
 export function getRoleTerms(roles: string[]): string[] {
   return roles.flatMap((r) => ROLE_CONFIGS[r.toLowerCase()]?.searchTerms ?? [r.toLowerCase()]);
 }

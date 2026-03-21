@@ -1,6 +1,14 @@
-import axios from "axios";
+import axios, { AxiosError } from "axios";
 import { Job } from "../types";
-import { getActiveSlugs, getStaleSlugs, updateBoard, getEtag, setEtag, increment304, reset304 } from "../db";
+import {
+  getActiveSlugs,
+  getStaleSlugs,
+  updateBoard,
+  getEtag,
+  setEtag,
+  increment304,
+  reset304,
+} from "../db";
 import { log, debug } from "../lib/logger";
 import { errorMessage } from "../lib/utils";
 
@@ -32,11 +40,29 @@ interface CycleStats {
 }
 
 function emptyStats(): CycleStats {
-  return { fetched200: 0, cached304: 0, dead404: 0, timeouts: 0, rateLimited: 0, errors: 0, newJobs: 0, withDescription: 0 };
+  return {
+    fetched200: 0,
+    cached304: 0,
+    dead404: 0,
+    timeouts: 0,
+    rateLimited: 0,
+    errors: 0,
+    newJobs: 0,
+    withDescription: 0,
+  };
 }
 
-function formatStats(label: string, stats: CycleStats, totalJobs: number, totalBoards: number): string {
-  const parts = [`${totalJobs} jobs from ${totalBoards} boards`, `200:${stats.fetched200}`, `304:${stats.cached304}`];
+function formatStats(
+  label: string,
+  stats: CycleStats,
+  totalJobs: number,
+  totalBoards: number,
+): string {
+  const parts = [
+    `${totalJobs} jobs from ${totalBoards} boards`,
+    `200:${stats.fetched200}`,
+    `304:${stats.cached304}`,
+  ];
   if (stats.dead404 > 0) parts.push(`404:${stats.dead404}`);
   if (stats.timeouts > 0) parts.push(`timeout:${stats.timeouts}`);
   if (stats.rateLimited > 0) parts.push(`429:${stats.rateLimited}`);
@@ -45,7 +71,7 @@ function formatStats(label: string, stats: CycleStats, totalJobs: number, totalB
   return `${label}: ${parts.join(", ")}`;
 }
 
-export function createATSBoardFetcher(config: ATSBoardConfig) {
+export function createATSBoardFetcher(config: ATSBoardConfig): () => Promise<Job[]> {
   const jobsBySlug = new Map<string, Job[]>();
   const timeoutStrikes = new Map<string, number>();
   let warmup = false;
@@ -55,7 +81,11 @@ export function createATSBoardFetcher(config: ATSBoardConfig) {
     const headers: Record<string, string> = {};
     if (etag) headers["If-None-Match"] = etag;
 
-    const { data, status, headers: resHeaders } = await axios.get(config.buildUrl(slug), {
+    const {
+      data,
+      status,
+      headers: resHeaders,
+    } = await axios.get(config.buildUrl(slug), {
       params: config.requestParams,
       timeout: 5000,
       headers,
@@ -99,25 +129,26 @@ export function createATSBoardFetcher(config: ATSBoardConfig) {
   }
 
   function handleError(slug: string, reason: unknown, stats: CycleStats): void {
-    const msg = errorMessage(reason);
+    const status = reason instanceof AxiosError ? reason.response?.status : undefined;
+    const code = reason instanceof AxiosError ? reason.code : undefined;
 
-    if (msg.includes("429")) {
+    if (status === 429) {
       stats.rateLimited++;
       return;
     }
 
-    if (msg.includes("404") || msg.includes("Not Found")) {
+    if (status === 404) {
       stats.dead404++;
       updateBoard(slug, config.platform, false, 0);
       jobsBySlug.delete(slug);
       return;
     }
 
-    if (msg.includes("timeout")) {
+    if (code === "ECONNABORTED" || code === "ETIMEDOUT") {
       stats.timeouts++;
       const strikes = (timeoutStrikes.get(slug) ?? 0) + 1;
       timeoutStrikes.set(slug, strikes);
-      // Don't deactivate boards on warmup — transient timeouts during mass fetch are normal.
+      // Don't deactivate boards on warmup - transient timeouts during mass fetch are normal.
       // Only deactivate after 3 consecutive timeout strikes during regular cycles.
       if (!warmup && strikes >= 3) {
         updateBoard(slug, config.platform, false, 0);
@@ -128,7 +159,7 @@ export function createATSBoardFetcher(config: ATSBoardConfig) {
     }
 
     stats.errors++;
-    debug(`${config.label} [${slug}]: ${msg}`);
+    debug(`${config.label} [${slug}]: ${errorMessage(reason)}`);
   }
 
   function allJobs(): Job[] {
@@ -137,17 +168,19 @@ export function createATSBoardFetcher(config: ATSBoardConfig) {
 
   return async function fetchAll(): Promise<Job[]> {
     warmup = jobsBySlug.size === 0;
-    const stale = warmup
-      ? getActiveSlugs(config.platform)
-      : getStaleSlugs(config.platform, 3600);
+    const stale = warmup ? getActiveSlugs(config.platform) : getStaleSlugs(config.platform, 3600);
 
     if (stale.length === 0) {
-      debug(`${config.label}: nothing stale, returning ${allJobs().length} cached jobs from ${jobsBySlug.size} boards`);
+      debug(
+        `${config.label}: nothing stale, returning ${allJobs().length} cached jobs from ${jobsBySlug.size} boards`,
+      );
       return allJobs();
     }
 
     const checkSlugs = stale.slice(0, config.boardsPerCycle);
-    log(`${config.label}: ${warmup ? "WARMUP " : ""}checking ${checkSlugs.length} of ${stale.length} stale boards (batch=${config.batchSize})...`);
+    log(
+      `${config.label}: ${warmup ? "WARMUP " : ""}checking ${checkSlugs.length} of ${stale.length} stale boards (batch=${config.batchSize})...`,
+    );
 
     const stats = emptyStats();
 

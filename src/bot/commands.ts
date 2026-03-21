@@ -1,76 +1,77 @@
 import { Composer, InlineKeyboard } from "grammy";
 import type { Context } from "grammy";
-import { isOnboarded, loadSettings, saveSettings, deleteUserData, getAllSourceHealth } from "../db";
+import {
+  UserSettings,
+  isOnboarded,
+  loadSettings,
+  saveSettings,
+  deleteUserData,
+  getAllSourceHealth,
+} from "../db";
 import { sources } from "../sources";
 import { getStoredJob, sendJob } from "./delivery";
 import { getPollStats, clearUserState } from "../pipeline/polling";
-import { replyKb } from "./presets";
-import { wizardSessions, sweepStaleWizards } from "./wizard";
+import { escapeHtml } from "./format";
+import { replyKb } from "./keyboards";
+import { wizardSessions, sweepStaleWizards, createWizardSession } from "./wizard";
 import { waitingForInput, sweepStaleInputs, showSettings } from "./settings";
 
-// ── Sweep both Maps ────────────────────────────────────────────────────────
+const MAX_TITLE_LEN = 40;
 
-function sweepStale(): void {
-  sweepStaleWizards();
-  sweepStaleInputs();
+function truncate(text: string, max: number): string {
+  return text.length > max ? text.slice(0, max) + "..." : text;
 }
 
-// ── Activity reply (shared by /status command and keyboard button) ─────────
+function formatActivity(s: UserSettings | null, stats: ReturnType<typeof getPollStats>): string {
+  const status = s?.paused
+    ? "\u23f8 Paused"
+    : `\u2705 Active \u00b7 checking every ${s?.checkIntervalMinutes ?? 30} min`;
+
+  // db-persisted counters (survive restarts), unlike per-cycle stats below
+  const counters = `Sources: ${s?.enabledSources.length ?? 0} active\nTotal jobs sent: ${s?.jobsSent ?? 0}`;
+
+  if (!stats) {
+    return (s?.jobsSent ?? 0) === 0
+      ? `${status}\n\n${counters}\n\nWaiting for the first check...`
+      : `${status}\n\n${counters}`;
+  }
+
+  const lastCheck = `Last check:\n  Scanned: ${stats.checked} jobs\n  Sent: ${stats.sent}`;
+
+  const skipped = stats.rejected
+    .slice(-5)
+    .map(
+      (r) =>
+        `\u2022 <a href="${escapeHtml(r.url)}">${escapeHtml(truncate(r.title, MAX_TITLE_LEN))}</a> \u2014 ${escapeHtml(r.reason)}`,
+    );
+
+  let hint = "";
+  if (stats.checked > 0 && stats.sent === 0) {
+    hint =
+      "\ud83d\udca1 No matches found. Try broadening your filters \u2014 add more technologies or lower the salary threshold.";
+  } else if (stats.checked > 50 && stats.sent > 0 && stats.sent <= 2) {
+    hint =
+      "\ud83d\udca1 Few matches. You might get more by adding technologies or relaxing seniority level.";
+  }
+
+  return [
+    status,
+    counters,
+    lastCheck,
+    skipped.length > 0 ? `Recently skipped:\n${skipped.join("\n")}` : "",
+    hint,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
 
 async function replyActivity(ctx: Context): Promise<void> {
   const chatId = String(ctx.chat!.id);
-  const s = loadSettings(chatId);
-  const stats = getPollStats(chatId);
-
-  const lines: string[] = [];
-
-  // Status line
-  if (s?.paused) {
-    lines.push("\u23f8 Paused");
-  } else {
-    lines.push(`\u2705 Active \u00b7 checking every ${s?.checkIntervalMinutes ?? 30} min`);
-  }
-
-  // Lifetime stats (always available, persisted in DB)
-  const totalSent = s?.jobsSent ?? 0;
-  const srcCount = s?.enabledSources.length ?? 0;
-  lines.push("", `Sources: ${srcCount} active`, `Total jobs sent: ${totalSent}`);
-
-  if (stats) {
-    // Per-cycle stats (available after first poll since restart)
-    lines.push("", `Last check:`, `  Scanned: ${stats.checked} jobs`, `  Sent: ${stats.sent}`);
-
-    if (stats.rejected.length > 0) {
-      lines.push("", "Recently skipped:");
-      for (const r of stats.rejected.slice(-5)) {
-        const title = r.title.length > 40 ? r.title.slice(0, 40) + "..." : r.title;
-        lines.push(`\u2022 <a href="${r.url}">${title}</a> \u2014 ${r.reason}`);
-      }
-    }
-
-    // Smart hint
-    if (stats.checked > 0 && stats.sent === 0) {
-      lines.push(
-        "",
-        "\ud83d\udca1 No matches found. Try broadening your filters \u2014 add more technologies or lower the salary threshold.",
-      );
-    } else if (stats.checked > 50 && stats.sent > 0 && stats.sent <= 2) {
-      lines.push(
-        "",
-        "\ud83d\udca1 Few matches. You might get more by adding technologies or relaxing seniority level.",
-      );
-    }
-  } else if (totalSent === 0) {
-    lines.push("", "Waiting for the first check...");
-  }
-
-  await ctx.reply(lines.join("\n"), {
+  await ctx.reply(formatActivity(loadSettings(chatId), getPollStats(chatId)), {
     parse_mode: "HTML",
     link_preview_options: { is_disabled: true },
   });
 }
-
-// ── Sources reply (shared by /sources command and keyboard button) ─────────
 
 function formatAgo(ms: number): string {
   if (ms < 60_000) return "just now";
@@ -92,24 +93,20 @@ async function replySources(ctx: Context): Promise<void> {
       continue;
     }
     const ago = h.last_success_at ? formatAgo(now - h.last_success_at) : "never";
-    if (h.fail_streak >= 3) {
-      lines.push(`\u26a0\ufe0f ${source.name}  \u2014  ${h.last_job_count ?? 0} jobs  ${ago}  (streak: ${h.fail_streak})`);
-    } else if (h.fail_streak > 0) {
-      lines.push(`\u26a0\ufe0f ${source.name}  \u2014  ${h.last_job_count ?? 0} jobs  ${ago}  (fail: ${h.fail_streak})`);
-    } else {
-      lines.push(`\u2705 ${source.name}  \u2014  ${h.last_job_count ?? 0} jobs  ${ago}`);
-    }
+    const icon = h.fail_streak > 0 ? "\u26a0\ufe0f" : "\u2705";
+    const suffix =
+      h.fail_streak > 0 ? ` (${h.fail_streak >= 3 ? "streak" : "fail"}: ${h.fail_streak})` : "";
+    lines.push(`${icon} ${source.name}  \u2014  ${h.last_job_count ?? 0} jobs  ${ago}${suffix}`);
   }
 
   await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
 }
 
-// ── Composer ───────────────────────────────────────────────────────────────
-
 export const commandHandlers = new Composer<Context>();
 
 commandHandlers.command("start", async (ctx) => {
-  sweepStale();
+  sweepStaleWizards();
+  sweepStaleInputs();
   const chatId = String(ctx.chat.id);
   if (wizardSessions.has(chatId)) {
     await ctx.reply("Setup is already in progress. Use /cancel to start over.");
@@ -130,21 +127,7 @@ commandHandlers.command("start", async (ctx) => {
       "Quick setup - takes about a minute.",
     { reply_markup: new InlineKeyboard().text("Set up my filters \u2192", "wiz:start") },
   );
-  wizardSessions.set(chatId, {
-    step: "welcome",
-    messageId: msg.message_id,
-    chatId,
-    createdAt: Date.now(),
-    roles: new Set(),
-    technologies: [],
-    seniority: new Set(),
-    jobTypes: new Set(),
-    workArrangement: new Set(),
-    locations: new Set(),
-    minSalaryUsd: 0,
-    acceptedLanguages: new Set(["English"]),
-    excludeKeywords: new Set(),
-  });
+  wizardSessions.set(chatId, createWizardSession(chatId, msg.message_id));
 });
 
 commandHandlers.command("delete", async (ctx) => {
