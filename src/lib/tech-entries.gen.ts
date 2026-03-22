@@ -1,4 +1,4 @@
-// Auto-generated — do not edit. Run: npm run build-tech-data
+// Auto-generated - do not edit. Run: npm run build-tech-data
 // Source: MIND-tech-ontology (930 techs from 3333 skills)
 
 export interface TechEntry {

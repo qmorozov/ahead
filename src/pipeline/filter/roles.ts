@@ -7,6 +7,11 @@ interface RoleConfig {
   domains: string[];
 }
 
+// Matches titles without a role-specific keyword that still contain "engineer/developer/programmer".
+// "Python Engineer", "Software Developer" → match (neutral). "iOS Developer", "QA Engineer" → no match.
+export const GENERIC_DEV_PATTERN =
+  /^(?!.*(?:front.?end|back.?end|full.?stack|mobile|ios|android|data|ml|ai|devops|sre|infra|platform|cloud|design|product|qa|quality|test|sdet|sales|marketing|support|customer|account|recruit|hr|finance)).*\b(?:engineer|developer|programmer|architect)\b/i;
+
 export const ROLE_CONFIGS: Record<string, RoleConfig> = {
   frontend: {
     titlePattern: /front.?end|UI\s*(developer|engineer)|web\s*developer/i,
@@ -62,6 +67,7 @@ export const ROLE_CONFIGS: Record<string, RoleConfig> = {
   },
 };
 
+/** Get search terms for the given roles (e.g. "frontend" → ["frontend", "front-end", "UI developer"]). */
 export function getRoleTerms(roles: string[]): string[] {
   return roles.flatMap((r) => ROLE_CONFIGS[r.toLowerCase()]?.searchTerms ?? [r.toLowerCase()]);
 }

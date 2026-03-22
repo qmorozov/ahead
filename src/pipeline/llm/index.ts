@@ -1,10 +1,17 @@
 // LLM orchestrator - tries providers in order, falls through on failure, caches results.
 import { z } from "zod";
 import { config } from "../../config";
-import { getCachedParse, setCachedParse, getLlmQuotaValue, setLlmQuotaValue } from "../../db";
+import {
+  getCachedParse,
+  setCachedParse,
+  countRecentParses,
+  recordParseTimestamp,
+  pruneParseTimestamps,
+} from "../../db";
 import { hasContent, ParsedJob, ParsedJobSchema } from "../../types";
 import { log, debug } from "../../lib/logger";
-import { stripHtml, normalizeSeniority } from "../../lib/utils";
+import { stripHtml } from "../../lib/utils";
+import { normalizeSeniority } from "../../lib/seniority";
 import { LLM } from "../../constants";
 import type { LLMProvider, CallOptions, ModelTier } from "./types";
 import { createGroqProvider } from "./groq";
@@ -33,30 +40,27 @@ async function callLLM(
 // Hourly parse budget - shared across all providers to prevent 429 storms
 const HOUR_MS = 3_600_000;
 
-const parseTimestamps: number[] = (() => {
-  const raw = getLlmQuotaValue("parse_timestamps");
-  if (!raw) return [];
-  try {
-    const arr = JSON.parse(raw) as number[];
-    const cutoff = Date.now() - HOUR_MS;
-    return Array.isArray(arr) ? arr.filter((t) => t > cutoff) : [];
-  } catch {
-    return [];
-  }
-})();
+// In-memory tracking: count of recent parses for O(1) availability check.
+// DB is written on every recordParse for restart persistence; in-memory is authoritative at runtime.
+pruneParseTimestamps(Date.now() - HOUR_MS);
+let parseCount = countRecentParses(Date.now() - HOUR_MS);
+let lastPruneAt = Date.now();
 
 function isParseAvailable(): boolean {
   if (providers.length === 0) return false;
-  const cutoff = Date.now() - HOUR_MS;
-  const idx = parseTimestamps.findIndex((t) => t > cutoff);
-  if (idx > 0) parseTimestamps.splice(0, idx);
-  else if (idx === -1) parseTimestamps.length = 0;
-  return parseTimestamps.length < LLM.PARSES_PER_HOUR;
+  // Re-sync from DB at most once per minute to account for expired timestamps
+  const now = Date.now();
+  if (now - lastPruneAt > 60_000) {
+    pruneParseTimestamps(now - HOUR_MS);
+    parseCount = countRecentParses(now - HOUR_MS);
+    lastPruneAt = now;
+  }
+  return parseCount < LLM.PARSES_PER_HOUR;
 }
 
 function recordParse(): void {
-  parseTimestamps.push(Date.now());
-  setLlmQuotaValue("parse_timestamps", JSON.stringify(parseTimestamps));
+  parseCount++;
+  recordParseTimestamp(Date.now());
 }
 
 // Strip HTML, truncate to budget, wrap in XML tags for prompt injection defense
@@ -86,6 +90,8 @@ const EMPTY_PARSED: ParsedJob = {
   seniority: null,
   salary: null,
   primaryTags: [],
+  workArrangement: null,
+  locationRestriction: null,
 };
 
 function postProcess(data: z.infer<typeof ParsedJobSchema>): ParsedJob {
@@ -97,6 +103,19 @@ function postProcess(data: z.infer<typeof ParsedJobSchema>): ParsedJob {
     responsibilities: data.responsibilities.slice(0, 5),
     primaryTags: data.primaryTags.slice(0, 8).map((t) => t.toLowerCase()),
   };
+}
+
+function humanizeZodError(issues: z.ZodIssue[]): string {
+  return issues
+    .map((issue) => {
+      const field = String(issue.path[0] ?? "field");
+      if (issue.code === "invalid_value" && "values" in issue) {
+        const vals = (issue as { values: unknown[] }).values;
+        return `"${field}" must be one of: ${vals.join(", ")}`;
+      }
+      return `"${field}": ${issue.message}`;
+    })
+    .join("; ");
 }
 
 function tryParseLLMOutput(raw: string | null | undefined): {
@@ -118,7 +137,7 @@ function tryParseLLMOutput(raw: string | null | undefined): {
 
   const result = ParsedJobSchema.safeParse(json);
   if (!result.success) {
-    const error = result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
+    const error = humanizeZodError(result.error.issues);
     debug(`LLM output: validation failed: ${error.slice(0, 200)}`);
     return { parsed: null, error };
   }
@@ -152,9 +171,16 @@ export async function classifyBatch(
   if (providers.length === 0) return new Set(jobs.map((j) => j.index));
 
   const relevant = new Set<number>();
+  let consecutiveFailures = 0;
 
   for (let i = 0; i < jobs.length; i += LLM.CLASSIFY_BATCH_SIZE) {
     const batch = jobs.slice(i, i + LLM.CLASSIFY_BATCH_SIZE);
+
+    if (consecutiveFailures >= 2) {
+      for (const j of batch) relevant.add(j.index);
+      continue;
+    }
+
     const list = batch
       .map((j, idx) => `${idx + 1}. ${j.title} - ${j.company} [${j.tags.slice(0, 4).join(", ")}]`)
       .join("\n");
@@ -162,8 +188,13 @@ export async function classifyBatch(
     const nums = await classifySingleBatch(batch.length, userProfile, list);
 
     if (!nums) {
+      consecutiveFailures++;
+      if (consecutiveFailures >= 2) {
+        log("LLM classify unavailable - using score-only filter");
+      }
       for (const j of batch) relevant.add(j.index);
     } else {
+      consecutiveFailures = 0;
       for (const n of nums) {
         const job = batch[n - 1];
         if (job) relevant.add(job.index);
@@ -195,28 +226,28 @@ async function classifySingleBatch(
       (n: unknown): n is number =>
         typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= batchSize,
     );
-  } catch {
+  } catch (err) {
+    debug(`Classify batch error: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }
 
-/**
- * Full job description parsing with the heavy model.
- * Cached in DB for 30 days. On invalid output, retries once
- * with the Zod error fed back into the prompt.
- */
+/** Full LLM parse (heavy model). Cached 30 days, retries once on bad output. */
 export async function parseJobDescription(
   jobKey: string,
   description: string,
 ): Promise<ParsedJob | null> {
   const cached = getCachedParse(jobKey);
   if (cached) {
-    debug(`LLM cache hit [${jobKey}]: ${cached.primaryTags.join(", ")}`);
-    return cached;
+    if (cached.quality === "full" || !isParseAvailable()) {
+      debug(`LLM cache hit [${jobKey}]: ${cached.parsed.primaryTags.join(", ")}`);
+      return cached.parsed;
+    }
+    debug(`LLM upgrading quick parse [${jobKey}]`);
   }
 
   if (!isParseAvailable()) {
-    debug(`LLM skip [${jobKey}]: quota ${parseTimestamps.length}/${LLM.PARSES_PER_HOUR}`);
+    debug(`LLM skip [${jobKey}]: quota full`);
     return null;
   }
   if (!description || description.trim().length < MIN_DESCRIPTION_LENGTH) {
@@ -228,14 +259,14 @@ export async function parseJobDescription(
     return null;
   }
 
-  recordParse();
-  log(`LLM parsing [${jobKey}] (${parseTimestamps.length}/${LLM.PARSES_PER_HOUR})`);
+  log(`LLM parsing [${jobKey}]`);
 
   return parseWithRetry(jobKey, prepareDescription(description));
 }
 
 async function parseWithRetry(jobKey: string, prepared: string): Promise<ParsedJob> {
   let lastError: string | null = null;
+  let counted = false;
 
   for (let attempt = 0; attempt < MAX_PARSE_ATTEMPTS; attempt++) {
     const prompt = lastError
@@ -243,6 +274,13 @@ async function parseWithRetry(jobKey: string, prepared: string): Promise<ParsedJ
       : PARSE_PROMPT;
 
     const raw = await callLLM("heavy", prompt, prepared, { maxTokens: 500 });
+
+    // only count towards quota if we got a response
+    if (raw !== null && !counted) {
+      recordParse();
+      counted = true;
+    }
+
     const { parsed, error } = tryParseLLMOutput(raw);
 
     if (parsed && hasContent(parsed)) {
@@ -265,10 +303,10 @@ async function parseWithRetry(jobKey: string, prepared: string): Promise<ParsedJ
   return { ...EMPTY_PARSED };
 }
 
-/** Lightweight tagging - only tags + seniority. Used when heavy parse budget is exceeded. */
+/** Quick-tag fallback (light model) — tags + seniority only, cached as "quick". */
 export async function quickTagJob(jobKey: string, description: string): Promise<ParsedJob | null> {
   const cached = getCachedParse(jobKey);
-  if (cached && cached.requirements.length > 0) return cached;
+  if (cached && cached.parsed.requirements.length > 0) return cached.parsed;
   if (!description || description.trim().length < MIN_DESCRIPTION_LENGTH) return null;
 
   const raw = await callLLM("light", QUICK_TAG_PROMPT, prepareDescription(description), {
@@ -295,7 +333,7 @@ export async function quickTagJob(jobKey: string, description: string): Promise<
     primaryTags: tags,
   };
 
-  setCachedParse(jobKey, parsed);
+  setCachedParse(jobKey, parsed, "quick");
   debug(`Quick-tag [${jobKey}]: ${tags.join(", ")}`);
   return parsed;
 }

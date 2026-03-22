@@ -1,25 +1,30 @@
 import { z } from "zod";
 
-export interface Job {
-  id: string;
-  title: string;
-  company: string;
-  location: string;
-  salary?: string;
-  description?: string;
-  seniority?: string;
-  jobType?: string;
-  salaryMinUsd?: number;
-  url: string;
-  source: string;
-  companyUrl?: string;
-  tags: string[];
-  publishedAt: string;
-  boardJobCount?: number;
-}
+/** Zod schema for a normalized job listing. All sources must produce data conforming to this shape. */
+export const JobSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  company: z.string(),
+  location: z.string(),
+  salary: z.string().optional(),
+  description: z.string().optional(),
+  seniority: z.string().optional(),
+  jobType: z.string().optional(),
+  salaryMinUsd: z.number().optional(),
+  url: z.string(),
+  source: z.string(),
+  companyUrl: z.string().optional(),
+  tags: z.array(z.string()),
+  publishedAt: z.string(),
+  boardJobCount: z.number().optional(),
+});
+
+/** A normalized job listing aggregated from any source. */
+export type Job = z.infer<typeof JobSchema>;
 
 const SeniorityEnum = z.enum(["Intern", "Junior", "Middle", "Senior", "Staff", "Lead", "Manager"]);
 
+/** Zod schema for LLM-parsed job description data. */
 export const ParsedJobSchema = z.object({
   requirements: z.array(z.string()),
   niceToHave: z.array(z.string()),
@@ -27,14 +32,19 @@ export const ParsedJobSchema = z.object({
   seniority: SeniorityEnum.nullable().catch(null),
   salary: z.string().nullable(),
   primaryTags: z.array(z.string()),
+  workArrangement: z.enum(["remote", "hybrid", "onsite"]).nullable().catch(null),
+  locationRestriction: z.string().max(100).nullable().catch(null),
 });
 
+/** LLM-parsed job description data. */
 export type ParsedJob = z.infer<typeof ParsedJobSchema>;
 
+/** Unique key for deduplication: `source::id`. */
 export function jobKey(job: Job): string {
   return `${job.source.toLowerCase()}::${job.id}`;
 }
 
+/** True if the parse has any useful fields filled in. */
 export function hasContent(parsed: ParsedJob): boolean {
   return (
     parsed.requirements.length > 0 ||

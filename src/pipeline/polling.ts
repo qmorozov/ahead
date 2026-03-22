@@ -1,77 +1,65 @@
 import { sources, fetchWithRetry } from "../sources";
-import { filterJobs, buildScoringContext, scoreJob, ScoringContext } from "./filter";
-import { sendJob, sendJobs } from "../bot/delivery";
-import { SCORING, POLLING, LLM } from "../constants";
 import {
-  isOnboarded,
+  filterJobs,
+  buildScoringContext,
+  scoreJob,
+  computeThreshold,
+  clearCachedContext,
+  ScoringContext,
+} from "./filter";
+import { sendJob, sendJobs } from "../bot/delivery";
+import { POLLING, LLM } from "../constants";
+import {
   UserSettings,
-  loadAllSettings,
+  loadOnboardedSettings,
   pruneParsedCache,
   pruneCompanyUrls,
   pruneSeen,
-  loadSeenKeys,
+  isSeen,
   markSeenBatch,
   isFirstRun,
   incrementJobsSent,
-  loadSeenTitles,
-  markTitleSeen,
+  isTitleSeen,
+  markTitleSeenBatch,
   pruneSeenTitles,
+  getDeferredCycles,
+  upsertDeferred,
+  deleteDeferred,
+  pruneDeferredDb,
+  deleteDeferredByChat,
 } from "../db";
-import { log, debug, logError } from "../lib/logger";
+import { log, debug } from "../lib/logger";
+import { logUnexpectedError } from "../lib/errors";
 import { Job, ParsedJob, jobKey } from "../types";
 import { parseJobDescription, classifyBatch, quickTagJob } from "./llm";
-import { fetchDjinniEnrichment } from "../sources/djinni";
-import { resolveCompanyUrls } from "./company";
-import { normalizeForDedup, sleep } from "../lib/utils";
+import { normalizeForDedup, runWorkerPool } from "../lib/utils";
+import { enrichJobs } from "./enrich";
+import { UserPollStats, getOrCreateStats, pruneInactiveStats, updatePollStats, clearPollStats } from "./stats";
+
+export { RejectedJob, UserPollStats, getPollStats } from "./stats";
 
 interface NewJob {
   job: Job;
   key: string;
+  normKey: string;
 }
 
-export interface RejectedJob {
-  title: string;
-  company: string;
-  url: string;
-  reason: string;
-}
+const MAX_NEW_PER_CYCLE = 100;
+const MAX_DEFER_CYCLES = 3;
+const DEFER_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
-export interface UserPollStats {
-  checked: number;
-  passed: number;
-  sent: number;
-  rejected: RejectedJob[];
-}
+const lastPolledAt = new Map<string, number>();
 
-const pollStats = new Map<string, UserPollStats>();
-const MAX_REJECTED = 10;
-
-export function getPollStats(chatId: string): UserPollStats | undefined {
-  return pollStats.get(chatId);
-}
-
+/** Clear in-memory state for a user (after account deletion). */
 export function clearUserState(chatId: string): void {
-  pollStats.delete(chatId);
   lastPolledAt.delete(chatId);
-  for (const key of deferredCount.keys()) {
-    if (key.startsWith(`${chatId}::`)) deferredCount.delete(key);
-  }
+  clearPollStats(chatId);
+  clearCachedContext(chatId);
+  deleteDeferredByChat(chatId);
 }
 
 let cachedJobs: Map<string, Job[]> | null = null;
 let cachedAt = 0;
-
-const lastPolledAt = new Map<string, number>();
-const deferredCount = new Map<string, { cycles: number; updatedAt: number }>(); // chatId::jobKey -> state
-const MAX_DEFER_CYCLES = 3;
-const DEFER_TTL_MS = 24 * 60 * 60 * 1000; // 24h
-
-function pruneDeferredCount(): void {
-  const cutoff = Date.now() - DEFER_TTL_MS;
-  for (const [key, entry] of deferredCount) {
-    if (entry.updatedAt < cutoff) deferredCount.delete(key);
-  }
-}
 
 async function fetchAllSources(): Promise<Map<string, Job[]>> {
   if (cachedJobs && Date.now() - cachedAt < POLLING.SOURCE_CACHE_TTL_MS) {
@@ -104,28 +92,28 @@ async function fetchAllSources(): Promise<Map<string, Job[]>> {
 function collectNewJobs(
   jobsBySource: Map<string, Job[]>,
   settings: UserSettings,
-  seenKeys: Set<string>,
-  seenTitleKeys: Set<string>,
+  chatId: string,
   ctx: ScoringContext,
 ): NewJob[] {
   const newJobs: NewJob[] = [];
   const cycleTitles = new Set<string>();
 
-  for (const [, sourceJobs] of jobsBySource) {
+  for (const [sourceName, sourceJobs] of jobsBySource) {
+    if (settings.enabledSources.length > 0 && !settings.enabledSources.includes(sourceName)) continue;
     for (const original of filterJobs(sourceJobs, settings, ctx)) {
       if (!original.title.trim()) continue;
       const key = jobKey(original);
-      if (seenKeys.has(key)) continue;
+      if (isSeen(chatId, key)) continue;
 
       const normKey = normalizeForDedup(original.title, original.company || "unknown");
       // Within same cycle: dedup by title only (catches same job from different sources)
       const titleOnly = normKey.split("::")[0]!;
       if (cycleTitles.has(titleOnly)) continue;
       // Cross-cycle: dedup by title+company (allows same title at different companies)
-      if (seenTitleKeys.has(normKey)) continue;
+      if (isTitleSeen(chatId, normKey)) continue;
       cycleTitles.add(titleOnly);
 
-      newJobs.push({ job: { ...original }, key });
+      newJobs.push({ job: { ...original }, key, normKey });
     }
   }
 
@@ -147,28 +135,40 @@ function prioritizeForParsing(jobs: NewJob[], settings: UserSettings): NewJob[] 
   return [...high, ...low];
 }
 
-async function parseJobs(newJobs: NewJob[], settings: UserSettings, maxParses: number): Promise<Map<string, ParsedJob | null>> {
+const PARSE_CONCURRENCY = 3;
+
+async function parseJobs(
+  newJobs: NewJob[],
+  settings: UserSettings,
+  maxParses: number,
+): Promise<Map<string, ParsedJob | null>> {
   const prioritized = prioritizeForParsing(newJobs, settings);
   debug(`Parsing ${prioritized.length} jobs for LLM (budget: ${maxParses})`);
   const parsedMap = new Map<string, ParsedJob | null>();
-  let parsed = 0;
-  for (const { job, key } of prioritized) {
-    if (parsed >= maxParses) {
-      // Quick-tag with 8B model for jobs that exceed full parse budget
-      const quickResult = await quickTagJob(key, job.description ?? "");
-      parsedMap.set(key, quickResult);
-      continue;
-    }
-    const result = await parseJobDescription(key, job.description ?? "");
-    if (result !== null) {
-      parsedMap.set(key, result);
-      parsed++;
-    } else {
-      // Full parse unavailable (quota/error) — fall back to quick-tag for better scoring
-      const quickResult = await quickTagJob(key, job.description ?? "");
-      parsedMap.set(key, quickResult);
-    }
+
+  // Phase 1: full parses - fall back to quick-tag if heavy model fails
+  const fullParseJobs = prioritized.slice(0, maxParses);
+  await runWorkerPool(
+    fullParseJobs,
+    async ({ job, key }) => {
+      const result = await parseJobDescription(key, job.description ?? "");
+      parsedMap.set(key, result ?? (await quickTagJob(key, job.description ?? "")));
+    },
+    PARSE_CONCURRENCY,
+  );
+
+  // Phase 2: quick-tags for overflow jobs beyond the heavy-parse budget
+  const quickTagJobs = prioritized.slice(maxParses);
+  if (quickTagJobs.length > 0) {
+    await runWorkerPool(
+      quickTagJobs,
+      async ({ job, key }) => {
+        parsedMap.set(key, await quickTagJob(key, job.description ?? ""));
+      },
+      PARSE_CONCURRENCY,
+    );
   }
+
   return parsedMap;
 }
 
@@ -176,7 +176,12 @@ function classifyByRelevance(
   newJobs: NewJob[],
   parsedMap: Map<string, ParsedJob | null>,
   ctx: ScoringContext,
-): { relevant: NewJob[]; irrelevant: NewJob[]; companyCapped: NewJob[]; signalsMap: Map<string, string[]> } {
+): {
+  relevant: NewJob[];
+  irrelevant: NewJob[];
+  companyCapped: NewJob[];
+  signalsMap: Map<string, string[]>;
+} {
   const scores = new Map<string, number>();
   const signalsMap = new Map<string, string[]>();
   const relevant: NewJob[] = [];
@@ -187,8 +192,10 @@ function classifyByRelevance(
     const result = scoreJob(entry.job, parsed, ctx);
     scores.set(entry.key, result.score);
     signalsMap.set(entry.key, result.signals);
-    const pass = result.score >= SCORING.THRESHOLD;
-    debug(`score ${result.score} (${result.normalized}%) ${pass ? "PASS" : "FAIL"} "${entry.job.title}" [${result.signals.join(", ")}]`);
+    const pass = result.score >= computeThreshold(ctx);
+    debug(
+      `score ${result.score} (${result.normalized}%) ${pass ? "PASS" : "FAIL"} "${entry.job.title}" [${result.signals.join(", ")}]`,
+    );
     (pass ? relevant : irrelevant).push(entry);
   }
 
@@ -199,7 +206,10 @@ function classifyByRelevance(
   const companyCapped: NewJob[] = [];
   for (const entry of relevant) {
     const co = entry.job.company?.toLowerCase().trim();
-    if (!co) { capped.push(entry); continue; } // no company name → no cap
+    if (!co) {
+      capped.push(entry);
+      continue;
+    } // no company name → no cap
     const count = companyCounts.get(co) ?? 0;
     if (count < POLLING.MAX_PER_COMPANY) {
       companyCounts.set(co, count + 1);
@@ -212,7 +222,7 @@ function classifyByRelevance(
   return { relevant: capped, irrelevant, companyCapped, signalsMap };
 }
 
-/** Split irrelevant jobs into those ready to mark seen vs deferred for re-evaluation. */
+/** Separate rejects into final (mark seen) vs deferred (retry next cycle). */
 function classifyIrrelevant(
   chatId: string,
   irrelevant: NewJob[],
@@ -220,52 +230,37 @@ function classifyIrrelevant(
 ): { markSeen: NewJob[]; deferredTotal: number } {
   const ready: NewJob[] = [];
   for (const nj of irrelevant) {
-    const deferKey = `${chatId}::${nj.key}`;
     const wasParsed = parsedMap.get(nj.key) != null;
 
     if (wasParsed) {
       ready.push(nj);
-      deferredCount.delete(deferKey);
+      deleteDeferred(chatId, nj.key);
       continue;
     }
 
-    const prev = deferredCount.get(deferKey);
-    const cycles = (prev?.cycles ?? 0) + 1;
+    const prev = getDeferredCycles(chatId, nj.key);
+    const cycles = (prev ?? 0) + 1;
     if (cycles >= MAX_DEFER_CYCLES) {
       ready.push(nj);
-      deferredCount.delete(deferKey);
+      deleteDeferred(chatId, nj.key);
     } else {
-      deferredCount.set(deferKey, { cycles, updatedAt: Date.now() });
+      upsertDeferred(chatId, nj.key, cycles, Date.now());
     }
   }
   return { markSeen: ready, deferredTotal: irrelevant.length - ready.length };
 }
 
-async function enrichJobs(newJobs: NewJob[]): Promise<void> {
-  const djinniJobs = newJobs.filter(
-    (nj) => nj.job.source === "Djinni" && (!nj.job.company || !nj.job.location),
-  );
-  for (let i = 0; i < djinniJobs.length; i += 5) {
-    const batch = djinniJobs.slice(i, i + 5);
-    const results = await Promise.all(batch.map((nj) => fetchDjinniEnrichment(nj.job.url)));
-    for (let j = 0; j < batch.length; j++) {
-      const enriched = results[j];
-      const nj = batch[j];
-      if (!enriched || !nj) continue;
-      if (!nj.job.company && enriched.company) nj.job.company = enriched.company;
-      if (!nj.job.location && enriched.location) nj.job.location = enriched.location;
-    }
-    if (i + 5 < djinniJobs.length) await sleep(2000);
+/** Send each job as a separate message. */
+async function deliverIndividually(
+  chatId: string,
+  jobs: NewJob[],
+  getParsed: (nj: NewJob) => ParsedJob | null,
+): Promise<NewJob[]> {
+  const delivered: NewJob[] = [];
+  for (const nj of jobs) {
+    if (await sendJob(chatId, nj.job, getParsed(nj))) delivered.push(nj);
   }
-
-  const jobs = newJobs.map((nj) => nj.job);
-  const companyUrls = await resolveCompanyUrls(jobs);
-  for (const { job } of newJobs) {
-    if (!job.companyUrl && job.company) {
-      const url = companyUrls.get(job.company.toLowerCase().trim());
-      if (url) job.companyUrl = url;
-    }
-  }
+  return delivered;
 }
 
 async function deliverJobs(
@@ -278,37 +273,110 @@ async function deliverJobs(
   const getParsed = (nj: NewJob) => parsedMap.get(nj.key) ?? null;
 
   if (firstRun) {
-    const sixHoursAgo = Date.now() - 6 * 60 * 60 * 1000;
+    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
     const fresh = newJobs.filter((nj) => {
       const ts = new Date(nj.job.publishedAt).getTime();
-      return isNaN(ts) || ts > sixHoursAgo;
+      return isNaN(ts) || ts > oneDayAgo;
     });
-    const top = fresh.slice(0, 3);
-    if (top.length === 0) return [];
-
-    const delivered: NewJob[] = [];
-    for (const nj of top) {
-      if (await sendJob(chatId, nj.job, getParsed(nj))) delivered.push(nj);
-    }
-    // Don't mark remaining as skipped — they'll appear in next cycle
-    return delivered;
+    return deliverIndividually(chatId, fresh.slice(0, 3), getParsed);
   }
 
   if (newJobs.length <= 3) {
-    const delivered: NewJob[] = [];
-    for (const nj of newJobs) {
-      if (await sendJob(chatId, nj.job, getParsed(nj))) delivered.push(nj);
-    }
-    return delivered;
+    return deliverIndividually(chatId, newJobs, getParsed);
   }
 
   const jobs = newJobs.map((nj) => nj.job);
   const sent = await sendJobs(chatId, jobs, parsedMap, signalsMap);
   const sentKeys = new Set(sent.map(jobKey));
-  const delivered = newJobs.filter((nj) => sentKeys.has(nj.key));
-  return delivered;
+  return newJobs.filter((nj) => sentKeys.has(nj.key));
 }
 
+/** User profile summary for LLM classify prompt. */
+function buildUserProfile(settings: UserSettings): string {
+  const sanitize = (s: string) =>
+    s
+      .replace(/[\n\r]/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  const profileParts: [string, string][] = [
+    ["Role", sanitize(settings.roles.join(", "))],
+    ["Tech", sanitize(settings.keywords.slice(0, 10).join(", "))],
+    ["Level", sanitize(settings.seniority.join(", "))],
+  ];
+  let profile = profileParts
+    .filter(([, value]) => value.length > 0)
+    .map(([label, value]) => `${label}: ${value}`)
+    .join(". ");
+
+  if (settings.excludeKeywords.length > 0) {
+    profile += `. Exclude these technologies (not relevant): ${sanitize(settings.excludeKeywords.join(", "))}`;
+  }
+  return profile;
+}
+
+/** LLM pre-filter: marks all seen if nothing passes. */
+async function preFilterByLLM(
+  chatId: string,
+  allNew: NewJob[],
+  settings: UserSettings,
+): Promise<{ candidates: NewJob[]; preFilteredJobs: NewJob[] }> {
+  const profile = buildUserProfile(settings);
+  const classifyInput = allNew.map((nj, i) => ({
+    index: i,
+    title: nj.job.title,
+    company: nj.job.company,
+    tags: nj.job.tags,
+  }));
+
+  const relevantIndices = await classifyBatch(classifyInput, profile);
+  const candidates = allNew.filter((_, i) => relevantIndices.has(i));
+  const preFilteredJobs = allNew.filter((_, i) => !relevantIndices.has(i));
+
+  const removed = allNew.length - candidates.length;
+  if (removed > 0)
+    log(`[${chatId}] LLM pre-filter: ${allNew.length} → ${candidates.length} (${removed} removed)`);
+  if (candidates.length === 0) {
+    markSeenBatch(
+      chatId,
+      allNew.map((nj) => nj.key),
+    );
+    log(`[${chatId}] No relevant jobs after LLM pre-filter.`);
+  }
+
+  return { candidates, preFilteredJobs };
+}
+
+/** Mark processed jobs as seen, bump counters. */
+function finalizeSeenState(
+  chatId: string,
+  stats: UserPollStats,
+  delivered: NewJob[],
+  markSeen: NewJob[],
+  companyCapped: NewJob[],
+  preFilteredJobs: NewJob[],
+  irrelevantCount: number,
+): void {
+  const processedJobs = [...markSeen, ...companyCapped, ...preFilteredJobs, ...delivered];
+  markSeenBatch(
+    chatId,
+    processedJobs.map((nj) => nj.key),
+  );
+
+  if (delivered.length > 0) {
+    stats.sent += delivered.length;
+    incrementJobsSent(chatId, delivered.length);
+  }
+
+  const titleNormKeys = processedJobs.filter((nj) => nj.job.company).map((nj) => nj.normKey);
+  if (titleNormKeys.length > 0) markTitleSeenBatch(chatId, titleNormKeys);
+
+  log(`[${chatId}] Sent ${delivered.length} job(s), ${irrelevantCount} irrelevant.`);
+}
+
+/**
+ * Full pipeline for one user:
+ *  collect → LLM pre-filter → parse → score → enrich → deliver → mark seen
+ */
 async function processForUser(
   settings: UserSettings,
   jobsBySource: Map<string, Job[]>,
@@ -321,124 +389,108 @@ async function processForUser(
 
   const chatId = settings.chatId;
   const firstRun = isFirstRun(chatId);
-  const stats: UserPollStats = pollStats.get(chatId) ?? { checked: 0, passed: 0, sent: 0, rejected: [] };
-  pollStats.set(chatId, stats);
-
+  const stats = getOrCreateStats(chatId);
   const ctx = buildScoringContext(settings);
-  const seenKeys = loadSeenKeys(chatId);
-  const seenTitleKeys = loadSeenTitles(chatId);
-  const allNew = collectNewJobs(jobsBySource, settings, seenKeys, seenTitleKeys, ctx);
+
+  let allNew = collectNewJobs(jobsBySource, settings, chatId, ctx);
   if (allNew.length === 0) {
     log(`[${chatId}] No new jobs.`);
     return;
   }
 
-  // Sanitize user settings to prevent prompt injection
-  const sanitize = (s: string) => s.replace(/[\n\r]/g, " ").replace(/\s{2,}/g, " ").trim();
-  const profileParts: [string, string][] = [
-    ["Role", sanitize(settings.roles.join(", "))],
-    ["Tech", sanitize(settings.keywords.slice(0, 10).join(", "))],
-    ["Level", sanitize(settings.seniority.join(", "))],
-    ["Exclude", sanitize(settings.excludeKeywords.join(", "))],
-  ];
-  const profile = profileParts
-    .filter(([, value]) => value.length > 0)
-    .map(([label, value]) => `${label}: ${value}`)
-    .join(". ");
-
-  const classifyInput = allNew.map((nj, i) => ({
-    index: i,
-    title: nj.job.title,
-    company: nj.job.company,
-    tags: nj.job.tags,
-  }));
-
-  const relevantIndices = await classifyBatch(classifyInput, profile);
-  const newJobs = allNew.filter((_, i) => relevantIndices.has(i));
-  const preFiltered = allNew.length - newJobs.length;
-
-  if (preFiltered > 0) log(`[${chatId}] LLM pre-filter: ${allNew.length} → ${newJobs.length} (${preFiltered} removed)`);
-  if (newJobs.length === 0) {
-    markSeenBatch(chatId, allNew.map((nj) => nj.key));
-    log(`[${chatId}] No relevant jobs after LLM pre-filter.`);
-    return;
+  // Cap to prevent timeout - prioritize title/tag matches over description-only
+  if (allNew.length > MAX_NEW_PER_CYCLE) {
+    const prioritized = prioritizeForParsing(allNew, settings);
+    const overflow = prioritized.slice(MAX_NEW_PER_CYCLE);
+    allNew = prioritized.slice(0, MAX_NEW_PER_CYCLE);
+    markSeenBatch(
+      chatId,
+      overflow.map((nj) => nj.key),
+    );
+    log(`[${chatId}] Capped: processing ${allNew.length}, skipped ${overflow.length} weak matches`);
   }
 
-  const parsedMap = await parseJobs(newJobs, settings, parseBudget);
+  let finalized = false;
+  try {
+    const { candidates, preFilteredJobs } = await preFilterByLLM(chatId, allNew, settings);
+    if (candidates.length === 0) return;
 
-  const { relevant, irrelevant, companyCapped, signalsMap } = classifyByRelevance(newJobs, parsedMap, ctx);
+    const parsedMap = await parseJobs(candidates, settings, parseBudget);
+    const { relevant, irrelevant, companyCapped, signalsMap } = classifyByRelevance(
+      candidates,
+      parsedMap,
+      ctx,
+    );
+    updatePollStats(
+      stats,
+      allNew.length,
+      relevant.length,
+      irrelevant.map((nj) => ({
+        key: nj.key,
+        title: nj.job.title,
+        company: nj.job.company,
+        url: nj.job.url,
+      })),
+      signalsMap,
+    );
 
-  stats.checked += allNew.length;
-  stats.passed += relevant.length;
-  for (const nj of irrelevant) {
-    const reasons = signalsMap.get(nj.key) ?? [];
-    stats.rejected.push({
-      title: nj.job.title,
-      company: nj.job.company,
-      url: nj.job.url,
-      reason: reasons[0] ?? "low score",
-    });
+    const { markSeen, deferredTotal } = classifyIrrelevant(chatId, irrelevant, parsedMap);
+    if (irrelevant.length > 0)
+      log(
+        `[${chatId}] Filtered out ${irrelevant.length} irrelevant jobs via AI${deferredTotal > 0 ? ` (${deferredTotal} deferred)` : ""}`,
+      );
+
+    if (relevant.length === 0) {
+      markSeenBatch(
+        chatId,
+        [...markSeen, ...companyCapped, ...preFilteredJobs].map((nj) => nj.key),
+      );
+      log(`[${chatId}] No relevant jobs (${candidates.length} filtered out).`);
+      finalized = true;
+      return;
+    }
+
+    await enrichJobs(relevant);
+    const delivered = await deliverJobs(chatId, relevant, parsedMap, signalsMap, firstRun);
+    finalizeSeenState(
+      chatId,
+      stats,
+      delivered,
+      markSeen,
+      companyCapped,
+      preFilteredJobs,
+      irrelevant.length,
+    );
+    finalized = true;
+  } finally {
+    // Safety net: if interrupted (timeout, error) before finalization,
+    // mark all jobs seen to prevent re-processing loop
+    if (!finalized) {
+      markSeenBatch(
+        chatId,
+        allNew.map((nj) => nj.key),
+      );
+      log(
+        `[${chatId}] Interrupted - marked ${allNew.length} jobs as seen to prevent re-processing`,
+      );
+    }
   }
-  if (stats.rejected.length > MAX_REJECTED) {
-    stats.rejected = stats.rejected.slice(-MAX_REJECTED);
-  }
-
-  const { markSeen, deferredTotal: deferred } = classifyIrrelevant(chatId, irrelevant, parsedMap);
-
-  if (irrelevant.length > 0) {
-    log(`[${chatId}] Filtered out ${irrelevant.length} irrelevant jobs via AI${deferred > 0 ? ` (${deferred} deferred)` : ""}`);
-  }
-
-  const preFilteredJobs = allNew.filter((_, i) => !relevantIndices.has(i));
-
-  if (relevant.length === 0) {
-    markSeenBatch(chatId, [...markSeen, ...companyCapped, ...preFilteredJobs].map((nj) => nj.key));
-    log(`[${chatId}] No relevant jobs (${newJobs.length} filtered out).`);
-    return;
-  }
-
-  await enrichJobs(relevant);
-
-  const delivered = await deliverJobs(
-    chatId,
-    relevant,
-    parsedMap,
-    signalsMap,
-    firstRun,
-  );
-
-  // Consolidate all processed jobs and mark as seen in one batch.
-  // companyCapped are relevant but exceeded per-company limit — mark seen to avoid re-appearing.
-  const processedJobs = [...markSeen, ...companyCapped, ...preFilteredJobs, ...delivered];
-  markSeenBatch(chatId, processedJobs.map((nj) => nj.key));
-
-  if (delivered.length > 0) {
-    stats.sent += delivered.length;
-    incrementJobsSent(chatId, delivered.length);
-  }
-
-  for (const nj of processedJobs) {
-    if (nj.job.company) markTitleSeen(chatId, normalizeForDedup(nj.job.title, nj.job.company));
-  }
-
-  log(
-    `[${chatId}] ${firstRun ? "First run: " : ""}Sent ${delivered.length} job(s), ${irrelevant.length} irrelevant.`,
-  );
 }
 
 let polling = false;
 
+/** True while a poll cycle is running. */
 export function isPolling(): boolean {
   return polling;
 }
 
+/** Run a poll cycle for all due users. Skips if already polling (overlap guard). */
 export async function pollAllUsers(): Promise<void> {
   if (polling) return;
   polling = true;
 
   try {
-    const allSettings = loadAllSettings();
-    const active = allSettings.filter((s) => isOnboarded(s));
+    const active = loadOnboardedSettings();
 
     if (active.length === 0) {
       log("No active users.");
@@ -456,22 +508,46 @@ export async function pollAllUsers(): Promise<void> {
     pruneParsedCache();
     pruneCompanyUrls();
     pruneSeenTitles();
-    pruneDeferredCount();
+    pruneDeferredDb(Date.now() - DEFER_TTL_MS);
     for (const s of due) pruneSeen(s.chatId);
+
+    const activeIds = new Set(active.map((s) => s.chatId));
+    pruneInactiveStats(activeIds);
+    for (const id of lastPolledAt.keys()) if (!activeIds.has(id)) lastPolledAt.delete(id);
 
     const jobsBySource = await fetchAllSources();
     log(`Polling for ${due.length} of ${active.length} user(s)...`);
 
     const afterFetch = Date.now();
     const parseBudget = Math.max(10, Math.floor(LLM.PARSES_PER_HOUR / due.length));
-    for (const settings of due) {
-      try {
-        await processForUser(settings, jobsBySource, parseBudget);
-        lastPolledAt.set(settings.chatId, afterFetch);
-      } catch (error) {
-        logError(`Poll [${settings.chatId}]`, error);
-      }
-    }
+    const USER_CONCURRENCY = 3;
+    const PER_USER_TIMEOUT_MS = 180_000;
+
+    await runWorkerPool(
+      due,
+      async (settings) => {
+        try {
+          const ac = new AbortController();
+          const timer = setTimeout(() => ac.abort(), PER_USER_TIMEOUT_MS);
+          try {
+            await Promise.race([
+              processForUser(settings, jobsBySource, parseBudget),
+              new Promise<never>((_, reject) => {
+                ac.signal.addEventListener("abort", () =>
+                  reject(new Error(`Timed out after ${PER_USER_TIMEOUT_MS / 1000}s`)),
+                );
+              }),
+            ]);
+            lastPolledAt.set(settings.chatId, afterFetch);
+          } finally {
+            clearTimeout(timer);
+          }
+        } catch (error) {
+          logUnexpectedError(`Poll [${settings.chatId}]`, error);
+        }
+      },
+      USER_CONCURRENCY,
+    );
 
     log("Poll cycle complete.");
   } finally {
@@ -479,6 +555,7 @@ export async function pollAllUsers(): Promise<void> {
   }
 }
 
+/** Run a one-off poll for a single user (e.g. right after onboarding). */
 export async function pollSingleUser(settings: UserSettings): Promise<void> {
   if (polling) {
     log(`[${settings.chatId}] Skipped single poll (cycle in progress).`);
@@ -491,7 +568,7 @@ export async function pollSingleUser(settings: UserSettings): Promise<void> {
     await processForUser(settings, jobsBySource);
     lastPolledAt.set(settings.chatId, Date.now());
   } catch (error) {
-    logError(`Poll [${settings.chatId}]`, error);
+    logUnexpectedError(`Poll [${settings.chatId}]`, error);
   } finally {
     polling = false;
   }

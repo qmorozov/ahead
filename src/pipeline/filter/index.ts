@@ -1,7 +1,7 @@
 import { UserSettings } from "../../db";
 import { Job, ParsedJob } from "../../types";
-import { extractSalaryUsd } from "../../lib/utils";
-import { SCORING, LLM } from "../../constants";
+import { extractSalaryUsd } from "../../lib/salary";
+import { SCORING } from "../../constants";
 import { expandWithAliases, buildTagSet, normalizeTag, matchesAny, searchableText, inferTagsFromTitle, getStrippedDescription, GENERIC_TOOLS } from "./matching";
 import { getRoleTerms, getRoleTechSet } from "./roles";
 import { expandLocations, passesLocationCheck } from "./location";
@@ -11,6 +11,7 @@ import {
   scoreFreshness, scoreSalary, scoreExcludeKeywords, scoreJobQuality,
 } from "./scorers";
 
+/** Scoring context derived from user settings. Cached per chatId. */
 export interface ScoringContext {
   expandedKeywords: string[];
   stackKeywords: string[];
@@ -22,6 +23,9 @@ export interface ScoringContext {
   roles: string[];
   minSalaryUsd: number;
   userNonGenericCount: number;
+  workArrangement: string[];
+  expandedLocations: string[];
+  acceptedLanguages: Set<string>;
 }
 
 export interface ScorerResult {
@@ -38,16 +42,37 @@ export interface JobAnalysis {
   hasParsedTags: boolean;
 }
 
+export type ScorerName =
+  | "excludedTech"
+  | "seniority"
+  | "titleKeywords"
+  | "tagOverlap"
+  | "descKeywords"
+  | "stackMatch"
+  | "role"
+  | "foreignTech"
+  | "freshness"
+  | "salary"
+  | "excludeKeywords"
+  | "jobQuality";
+
 export interface ScoreResult {
   score: number;
   normalized: number;
   signals: string[];
-  breakdown: Record<string, number>;
+  breakdown: Partial<Record<ScorerName, number>>;
 }
 
-type Scorer = (job: Job, parsed: ParsedJob | null, ctx: ScoringContext, a: JobAnalysis) => ScorerResult;
+export interface ScorerInput {
+  job: Job;
+  parsed: ParsedJob | null;
+  ctx: ScoringContext;
+  analysis: JobAnalysis;
+}
 
-function splitStackAndTools(keywords: string[], roleTechs: Set<string>): string[] {
+type Scorer = (input: ScorerInput) => ScorerResult;
+
+function extractCoreStack(keywords: string[], roleTechs: Set<string>): string[] {
   const stack = keywords.filter((kw) => {
     const lower = kw.toLowerCase();
     if (roleTechs.has(normalizeTag(lower))) return true;
@@ -56,12 +81,30 @@ function splitStackAndTools(keywords: string[], roleTechs: Set<string>): string[
   return expandWithAliases(stack);
 }
 
+const ctxCache = new Map<string, { hash: string; ctx: ScoringContext }>();
+
+function settingsHash(settings: UserSettings): string {
+  return [
+    settings.keywords.join(","),
+    settings.roles.join(","),
+    settings.excludeKeywords.join(","),
+    settings.seniority.join(","),
+    settings.locations.join(","),
+    settings.workArrangement.join(","),
+    settings.acceptedLanguages.join(","),
+    String(settings.minSalaryUsd),
+  ].join("|");
+}
+
 export function buildScoringContext(settings: UserSettings): ScoringContext {
+  const hash = settingsHash(settings);
+  const cached = ctxCache.get(settings.chatId);
+  if (cached && cached.hash === hash) return cached.ctx;
   const roleTerms = getRoleTerms(settings.roles);
   const roleTechSet = getRoleTechSet(settings.roles);
-  return {
+  const ctx: ScoringContext = {
     expandedKeywords: expandWithAliases([...settings.keywords, ...roleTerms]),
-    stackKeywords: splitStackAndTools(settings.keywords, roleTechSet),
+    stackKeywords: extractCoreStack(settings.keywords, roleTechSet),
     expandedExcludes: expandWithAliases(settings.excludeKeywords),
     tagSet: buildTagSet(settings.keywords),
     excludeTagSet: buildTagSet(settings.excludeKeywords),
@@ -70,7 +113,16 @@ export function buildScoringContext(settings: UserSettings): ScoringContext {
     roles: settings.roles,
     minSalaryUsd: settings.minSalaryUsd,
     userNonGenericCount: settings.keywords.filter((kw) => !GENERIC_TOOLS.has(normalizeTag(kw))).length,
+    workArrangement: settings.workArrangement,
+    expandedLocations: expandLocations(settings.locations),
+    acceptedLanguages: new Set(settings.acceptedLanguages.map((l) => l.toLowerCase())),
   };
+  ctxCache.set(settings.chatId, { hash, ctx });
+  return ctx;
+}
+
+export function clearCachedContext(chatId: string): void {
+  ctxCache.delete(chatId);
 }
 
 function analyzeJob(job: Job, parsed: ParsedJob | null): JobAnalysis {
@@ -86,12 +138,12 @@ function analyzeJob(job: Job, parsed: ParsedJob | null): JobAnalysis {
 
 const SCORE_MAX =
   SCORING.TITLE_KEYWORD + SCORING.TAG_KEYWORD + SCORING.TAG_OVERLAP_MAX +
-  SCORING.STRONG_STACK_FIT + 15 /* desc keywords cap */ +
-  SCORING.ROLE_MATCH + 10 /* role-tech max */ +
+  SCORING.STRONG_STACK_FIT + SCORING.DESC_KEYWORD_MAX +
+  SCORING.ROLE_MATCH + SCORING.ROLE_TECH_MAX +
   SCORING.SENIORITY_MATCH + SCORING.FRESHNESS_MAX + SCORING.SALARY_MATCH +
   SCORING.HIGH_QUALITY_SOURCE + SCORING.COMPANY_SIZE;
 
-const scorers: Array<[string, Scorer]> = [
+const scorers: Array<[ScorerName, Scorer]> = [
   ["excludedTech", scoreExcludedTech],
   ["seniority", scoreSeniority],
   ["titleKeywords", scoreTitleKeywords],
@@ -106,14 +158,22 @@ const scorers: Array<[string, Scorer]> = [
   ["jobQuality", scoreJobQuality],
 ];
 
+export function computeThreshold(ctx: ScoringContext): number {
+  let t = SCORING.THRESHOLD; // base: 20
+  if (ctx.expandedKeywords.length > 10) t += 5;
+  if (ctx.roles.length > 0) t += 3;
+  if (ctx.senioritySet.size > 0) t += 2;
+  return t;
+}
+
 export function scoreJob(job: Job, parsed: ParsedJob | null, ctx: ScoringContext): ScoreResult {
   const analysis = analyzeJob(job, parsed);
-  const breakdown: Record<string, number> = {};
+  const breakdown: Partial<Record<ScorerName, number>> = {};
   const signals: string[] = [];
   let total = 0;
 
   for (const [name, scorer] of scorers) {
-    const r = scorer(job, parsed, ctx, analysis);
+    const r = scorer({ job, parsed, ctx, analysis });
     if (r.hardReject) {
       return { score: -1, normalized: 0, signals: r.signals, breakdown: { [name]: -1 } };
     }
@@ -126,10 +186,8 @@ export function scoreJob(job: Job, parsed: ParsedJob | null, ctx: ScoringContext
   return { score: total, normalized, signals, breakdown };
 }
 
-export function filterJobs(jobs: Job[], settings: UserSettings, ctx?: ScoringContext): Job[] {
-  const searchKeywords = ctx?.expandedKeywords ?? expandWithAliases([...settings.keywords, ...getRoleTerms(settings.roles)]);
-  const excludeKeywords = ctx?.expandedExcludes ?? expandWithAliases(settings.excludeKeywords);
-  const locations = expandLocations(settings.locations);
+export function filterJobs(jobs: Job[], settings: UserSettings, ctx: ScoringContext): Job[] {
+  const { expandedKeywords: searchKeywords, expandedExcludes: excludeKeywords, expandedLocations: locations } = ctx;
 
   return jobs.filter((job) => {
     const hasExtraContent = job.tags.length > 0 || Boolean(job.description);
@@ -144,8 +202,7 @@ export function filterJobs(jobs: Job[], settings: UserSettings, ctx?: ScoringCon
     }
 
     if (settings.minSalaryUsd > 0) {
-      const sal = extractSalaryUsd(job.salary);
-      const max = sal?.max ?? job.salaryMinUsd;
+      const max = job.salaryMinUsd ?? extractSalaryUsd(job.salary)?.max;
       if (max !== undefined && max < settings.minSalaryUsd) return false;
     }
 

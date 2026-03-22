@@ -1,4 +1,4 @@
-import { rssParser } from "../lib/utils";
+import { rssParser, RssItemSchema } from "../lib/utils";
 import { Job } from "../types";
 
 const FEED_URL = "https://hnrss.org/whoishiring/jobs?count=100";
@@ -10,6 +10,7 @@ interface ParsedPosting {
   tags: string[];
 }
 
+// Parse "Company | Title | Location | Tech1, Tech2" header
 function parsePosting(text: string): ParsedPosting {
   const result: ParsedPosting = { company: "", title: "", location: "", tags: [] };
 
@@ -62,11 +63,16 @@ function isTech(s: string): boolean {
   );
 }
 
+/** Fetch HN "Who is Hiring?" jobs via RSS. */
 export async function fetchHN(): Promise<Job[]> {
   const feed = await rssParser.parseURL(FEED_URL);
   const jobs: Job[] = [];
 
-  for (const item of feed.items) {
+  for (const raw of feed.items) {
+    const result = RssItemSchema.safeParse(raw);
+    if (!result.success) continue;
+    const item = result.data;
+
     const text = item.contentSnippet ?? item.content ?? "";
     if (text.length < 20) continue;
 

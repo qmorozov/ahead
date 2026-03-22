@@ -12,9 +12,10 @@ import {
 import { handlers, setOnWizardComplete, setOnIntervalChanged } from "./bot/handlers";
 import { log, logError } from "./lib/logger";
 import { pollAllUsers, pollSingleUser, isPolling } from "./pipeline/polling";
+import { initPendingJobs } from "./bot/delivery";
 import { sleep } from "./lib/utils";
 
-// Bot setup
+// ── Bot setup ──────────────────────────────────────────────────────────
 
 bot.catch((err) => {
   const error = err.error;
@@ -32,21 +33,29 @@ bot.catch((err) => {
 
 bot.use(handlers);
 
-setOnWizardComplete((chatId) => {
+setOnWizardComplete(async (chatId) => {
   const settings = loadSettings(chatId);
   if (settings) {
-    pollSingleUser(settings)
-      .catch((error) => logError(`Poll [${chatId}]`, error))
-      .finally(() => startCron());
+    try {
+      await pollSingleUser(settings);
+    } catch (error) {
+      logError(`Poll [${chatId}]`, error);
+    } finally {
+      startCron();
+    }
   }
 });
 
 setOnIntervalChanged(() => startCron());
 
-// Scheduling
+// ── Scheduling ─────────────────────────────────────────────────────────
 
 let cronTask: ScheduledTask | null = null;
 
+/**
+ * (Re)start the cron job that triggers polling.
+ * Schedule: every N minutes, where N = smallest user interval (min 5).
+ */
 function startCron(): void {
   if (cronTask) cronTask.stop();
 
@@ -56,6 +65,7 @@ function startCron(): void {
       ? Math.max(5, Math.min(...allSettings.map((s) => s.checkIntervalMinutes)))
       : 30;
 
+  // e.g. "*/15 * * * *" = every 15 minutes
   cronTask = cron.schedule(`*/${interval} * * * *`, () => {
     pollAllUsers().catch((error) => logError("Poll cycle", error));
   });
@@ -63,7 +73,7 @@ function startCron(): void {
   log(`Cron tick: every ${interval}min (per-user intervals apply).`);
 }
 
-// Hourly WAL checkpoint to keep the WAL file from growing indefinitely
+// "0 * * * *" = at minute 0 of every hour - truncate the WAL file
 const walCron = cron.schedule("0 * * * *", () => {
   try {
     checkpointWal();
@@ -72,31 +82,35 @@ const walCron = cron.schedule("0 * * * *", () => {
   }
 });
 
-// Startup
+// ── Startup ────────────────────────────────────────────────────────────
 
 bot.api
   .setMyCommands([
     { command: "start", description: "Set up your preferences" },
     { command: "settings", description: "Edit filters" },
-    { command: "status", description: "See recent activity" },
-    { command: "delete", description: "Delete all your data" },
-    { command: "cancel", description: "Cancel current action" },
   ])
   .catch((e) => logError("setMyCommands", e));
 
+initPendingJobs(bot.api);
 bot.start({ onStart: () => log("Bot started polling.") });
 
 const onboarded = loadAllSettings().filter((s) => isOnboarded(s));
 if (onboarded.length > 0) {
   log(`${onboarded.length} user(s) found. Starting polling...`);
-  pollAllUsers()
-    .catch((error) => logError("Initial poll", error))
-    .then(() => startCron());
+  (async () => {
+    try {
+      await pollAllUsers();
+    } catch (error) {
+      logError("Initial poll", error);
+    } finally {
+      startCron();
+    }
+  })();
 } else {
   log("No users yet. Waiting for /start in Telegram...");
 }
 
-// Shutdown
+// ── Shutdown ───────────────────────────────────────────────────────────
 
 let shuttingDown = false;
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -104,7 +118,7 @@ const SHUTDOWN_TIMEOUT_MS = 10_000;
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
-  log(`${signal} received — shutting down...`);
+  log(`${signal} received - shutting down...`);
 
   cronTask?.stop();
   walCron.stop();

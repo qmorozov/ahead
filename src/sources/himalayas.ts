@@ -2,7 +2,8 @@ import axios from "axios";
 import { z } from "zod";
 import { HTTP_TIMEOUT } from "../config";
 import { Job } from "../types";
-import { formatSalaryRange, normalizeJobType } from "../lib/utils";
+import { normalizeJobType } from "../lib/utils";
+import { formatSalaryRange } from "../lib/salary";
 
 const JobSchema = z.object({
   guid: z.string().default(""),

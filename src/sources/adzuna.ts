@@ -2,8 +2,9 @@ import axios from "axios";
 import { z } from "zod";
 import { config, HTTP_TIMEOUT } from "../config";
 import { Job } from "../types";
-import { formatSalaryRange, sleep, normalizeJobType, stripHtml } from "../lib/utils";
-import { logError } from "../lib/logger";
+import { normalizeJobType, stripHtml, sleep } from "../lib/utils";
+import { formatSalaryRange, TO_USD } from "../lib/salary";
+import { logOperationalError } from "../lib/errors";
 
 const JobSchema = z.object({
   id: z.union([z.string(), z.number()]).transform(String),
@@ -33,7 +34,20 @@ const COUNTRY_CURRENCY: Record<string, string> = {
   ca: "CAD",
   pl: "PLN",
 };
+const CURRENCY_CODE: Readonly<Record<string, string>> = { EUR: "eur", CAD: "cad" };
+const COUNTRY_TO_USD_RATE: Readonly<Record<string, number>> = Object.fromEntries(
+  Object.entries(COUNTRY_CURRENCY)
+    .map(([country, cur]): [string, number] => [
+      country,
+      TO_USD[CURRENCY_CODE[cur] ?? ""] ?? (cur === "USD" ? 1 : 0),
+    ])
+    .filter(([, rate]) => rate > 0),
+);
 const BASE_URL = "https://api.adzuna.com/v1/api/jobs";
+
+/** Non-tech roles excluded from Adzuna results to reduce noise. */
+const EXCLUDE_ROLES =
+  "manager director vice president sales representative customer service recruiter accountant accounts payable finance specialist";
 
 async function fetchCountry(country: string): Promise<Job[]> {
   const { data } = await axios.get(`${BASE_URL}/${country}/search/1`, {
@@ -41,7 +55,7 @@ async function fetchCountry(country: string): Promise<Job[]> {
       app_id: config.adzunaAppId,
       app_key: config.adzunaAppKey,
       category: "it-jobs",
-      what_exclude: "manager director vice president sales representative customer service recruiter accountant accounts payable finance specialist",
+      what_exclude: EXCLUDE_ROLES,
       max_days_old: 3,
       results_per_page: 50,
       sort_by: "date",
@@ -57,7 +71,10 @@ async function fetchCountry(country: string): Promise<Job[]> {
     company: j.company.display_name,
     location: j.location.display_name || "Remote",
     salary: formatSalaryRange(j.salary_min, j.salary_max, COUNTRY_CURRENCY[country] ?? "USD"),
-    salaryMinUsd: country === "us" ? (j.salary_min ?? undefined) : undefined,
+    salaryMinUsd:
+      j.salary_min && COUNTRY_TO_USD_RATE[country]
+        ? Math.round(j.salary_min * COUNTRY_TO_USD_RATE[country])
+        : undefined,
     jobType: j.contract_type ? normalizeJobType(j.contract_type) : undefined,
     description: j.description,
     url: j.redirect_url,
@@ -67,18 +84,18 @@ async function fetchCountry(country: string): Promise<Job[]> {
   }));
 }
 
+/** Fetch IT jobs from Adzuna across multiple countries. */
 export async function fetchAdzuna(): Promise<Job[]> {
   if (!config.adzunaAppId || !config.adzunaAppKey) return [];
 
-  // Sequential with short delay to respect Adzuna rate limits
   const jobs: Job[] = [];
-  for (let i = 0; i < COUNTRIES.length; i++) {
+  for (const country of COUNTRIES) {
     try {
-      jobs.push(...(await fetchCountry(COUNTRIES[i]!)));
+      jobs.push(...await fetchCountry(country));
     } catch (err) {
-      logError(`Adzuna [${COUNTRIES[i]}]`, err);
+      logOperationalError(`Adzuna [${country}]`, err);
     }
-    if (i < COUNTRIES.length - 1) await sleep(500);
+    await sleep(500);
   }
   return jobs;
 }

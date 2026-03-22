@@ -68,7 +68,7 @@ const rows = entries.map(
 );
 
 const output = [
-  "// Auto-generated — do not edit. Run: npm run build-tech-data",
+  "// Auto-generated - do not edit. Run: npm run build-tech-data",
   `// Source: MIND-tech-ontology (${entries.length} techs from ${mindSkills.length} skills)`,
   "",
   "export interface TechEntry {",

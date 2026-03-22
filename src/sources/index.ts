@@ -5,9 +5,11 @@
  * - Degraded state (source down) → other sources continue, users still get results
  */
 import pRetry from "p-retry";
+import { AxiosError } from "axios";
 import { Job } from "../types";
-import { log, logError } from "../lib/logger";
-import { errorMessage } from "../lib/utils";
+import { log } from "../lib/logger";
+import { logOperationalError } from "../lib/errors";
+import { recordSourceSuccess, recordSourceFailure, getSourceHealth } from "../db";
 import { fetchRemoteOK } from "./remoteok";
 import { fetchRemotive } from "./remotive";
 import { fetchJobicy } from "./jobicy";
@@ -23,12 +25,18 @@ import { fetchAdzuna } from "./adzuna";
 import { fetchGreenhouse } from "./greenhouse";
 import { fetchLever } from "./lever";
 
-interface Source {
-  name: string;
-  fetch: () => Promise<Job[]>;
+/**
+ * A job source that can be fetched for listings.
+ * - `fetch` returns normalized `Job[]` on success, throws on failure.
+ * - Retries, staleness, and disabling are handled by `fetchWithRetry`.
+ */
+export interface JobSource {
+  readonly name: string;
+  fetch(): Promise<Job[]>;
 }
 
-export const sources: Source[] = [
+/** Registry of all available job sources. */
+export const sources: readonly JobSource[] = [
   { name: "RemoteOK", fetch: fetchRemoteOK },
   { name: "Remotive", fetch: fetchRemotive },
   { name: "Jobicy", fetch: fetchJobicy },
@@ -63,10 +71,20 @@ function isSourceDisabled(name: string): boolean {
 }
 
 function isTransientError(error: unknown): boolean {
-  return /timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED|429|503|fetch failed/i.test(errorMessage(error));
+  if (error instanceof AxiosError) {
+    const status = error.response?.status;
+    if (status && [429, 503, 504, 408].includes(status)) return true;
+    const code = error.code ?? "";
+    if (["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND"].includes(code)) return true;
+  }
+  return false;
 }
 
-export async function fetchWithRetry(source: Source): Promise<Job[]> {
+/**
+ * Fetch jobs from a source with retries, stale-data fallback, and auto-disable on repeated failure.
+ * Returns an empty array if the source is disabled or all retries are exhausted.
+ */
+export async function fetchWithRetry(source: JobSource): Promise<Job[]> {
   if (isSourceDisabled(source.name)) return [];
 
   try {
@@ -81,13 +99,20 @@ export async function fetchWithRetry(source: Source): Promise<Job[]> {
     consecutiveFailures.delete(source.name);
     disabledUntil.delete(source.name);
     if (jobs.length > 0) lastGoodResults.set(source.name, { jobs, fetchedAt: Date.now() });
+    recordSourceSuccess(source.name, jobs.length);
     return jobs;
   } catch (error) {
-    logError(source.name, error);
+    logOperationalError(source.name, error);
     const failures = (consecutiveFailures.get(source.name) ?? 0) + 1;
     consecutiveFailures.set(source.name, failures);
+    recordSourceFailure(source.name);
+    const health = getSourceHealth(source.name);
+    if (health && health.fail_streak >= 3) {
+      log(`Source ${source.name} has failed ${health.fail_streak} times in a row`);
+    }
 
-    const disableMs = failures >= 3 ? DISABLE_PERMANENT_MS : (isTransientError(error) ? DISABLE_TRANSIENT_MS : DISABLE_PERMANENT_MS);
+    const isMinor = failures < 3 && isTransientError(error);
+    const disableMs = isMinor ? DISABLE_TRANSIENT_MS : DISABLE_PERMANENT_MS;
     disabledUntil.set(source.name, Date.now() + disableMs);
 
     // Serve stale results if available and fresh enough

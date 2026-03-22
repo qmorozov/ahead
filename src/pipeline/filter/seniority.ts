@@ -1,5 +1,5 @@
 import { ParsedJob } from "../../types";
-import { SENIORITY_PATTERNS } from "../../lib/utils";
+import { SENIORITY_PATTERNS } from "../../lib/seniority";
 
 export function matchesSeniority(
   title: string,

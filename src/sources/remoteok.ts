@@ -2,7 +2,7 @@ import axios from "axios";
 import { z } from "zod";
 import { HTTP_TIMEOUT } from "../config";
 import { Job } from "../types";
-import { formatSalaryRange } from "../lib/utils";
+import { formatSalaryRange } from "../lib/salary";
 
 const JobSchema = z.object({
   id: z.union([z.string(), z.number()]).transform(String),

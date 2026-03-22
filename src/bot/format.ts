@@ -1,29 +1,37 @@
 import { Job, ParsedJob, hasContent } from "../types";
 import { UserSettings } from "../db";
-import { stripHtml, detectSeniority } from "../lib/utils";
+import { stripHtml } from "../lib/utils";
+import { detectSeniority } from "../lib/seniority";
 import { DELIVERY } from "../constants";
 
 export function formatSettings(settings: UserSettings): string {
   const fmt = (arr: string[], fallback: string) => (arr.length > 0 ? arr.join(", ") : fallback);
 
   const salary = settings.minSalaryUsd > 0 ? `$${settings.minSalaryUsd / 1000}k+` : "any";
+  const srcLabel =
+    settings.enabledSources.length > 0
+      ? `${settings.enabledSources.length} sources`
+      : "all sources";
 
   return [
     `Status \u00b7 ${settings.paused ? "paused" : "active"}`,
     `Roles \u00b7 ${fmt(settings.roles, "\u2014")}`,
     `Technologies \u00b7 ${fmt(settings.keywords, "\u2014")}`,
     `Exclude \u00b7 ${fmt(settings.excludeKeywords, "\u2014")}`,
+    `Work format \u00b7 ${fmt(settings.workArrangement, "any")}`,
     `Locations \u00b7 ${fmt(settings.locations, "any")}`,
     `Seniority \u00b7 ${fmt(settings.seniority, "any")}`,
     `Job type \u00b7 ${fmt(settings.jobTypes, "any")}`,
     `Min salary \u00b7 ${salary}`,
+    `Languages \u00b7 ${fmt(settings.acceptedLanguages, "any")}`,
+    `Sources \u00b7 ${srcLabel}`,
     `Interval \u00b7 ${settings.checkIntervalMinutes}min`,
     `Max age \u00b7 ${settings.maxJobAgeDays > 0 ? `${settings.maxJobAgeDays}d` : "off"}`,
     `Jobs sent \u00b7 ${settings.jobsSent}`,
   ].join("\n");
 }
 
-function escapeHtml(text: string): string {
+export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -62,6 +70,7 @@ function timeAgo(dateStr: string): string {
   return `about ${weeks} weeks ago`;
 }
 
+// generic job board categories that aren't technologies skip when showing tags
 const CATEGORY_WORDS =
   /programming|jobs|remote|development|design|management|marketing|writing|devops & sysadmin/i;
 
@@ -82,8 +91,13 @@ function techTags(job: Job, parsed: ParsedJob | null, limit: number): string[] {
     .map((t) => t.toLowerCase());
 }
 
-export function formatDigestItem(index: number, job: Job, parsed: ParsedJob | null, signals?: string[]): string {
-  const company = job.company ? ` — ${companyHtml(job)}` : "";
+export function formatDigestItem(
+  index: number,
+  job: Job,
+  parsed: ParsedJob | null,
+  signals?: string[],
+): string {
+  const company = job.company ? ` - ${companyHtml(job)}` : "";
   const url = isSafeUrl(job.url) ? escapeHtml(job.url) : "";
   const title = url
     ? `<b>${index}.</b> <a href="${url}">${escapeHtml(job.title)}</a>${company}`
@@ -97,7 +111,8 @@ export function formatDigestItem(index: number, job: Job, parsed: ParsedJob | nu
   if (salary) metaParts.push(salary);
 
   const meta = metaParts.length > 0 ? `\n    ${escapeHtml(metaParts.join(" \u00b7 "))}` : "";
-  const why = signals && signals.length > 0 ? `\n    \u2713 ${escapeHtml(signals.join(" \u00b7 "))}` : "";
+  const why =
+    signals && signals.length > 0 ? `\n    \u2713 ${escapeHtml(signals.join(" \u00b7 "))}` : "";
 
   return title + meta + why;
 }
@@ -143,7 +158,9 @@ export function formatMessage(job: Job, parsed: ParsedJob | null): string {
 
   const titleUrl = isSafeUrl(job.url) ? escapeHtml(job.url) : "";
   const lines = [
-    titleUrl ? `<a href="${titleUrl}"><b>${escapeHtml(job.title)}</b></a>` : `<b>${escapeHtml(job.title)}</b>`,
+    titleUrl
+      ? `<a href="${titleUrl}"><b>${escapeHtml(job.title)}</b></a>`
+      : `<b>${escapeHtml(job.title)}</b>`,
     job.company && `@ ${companyHtml(job)}`,
     job.location && `\n🌍 ${escapeHtml(job.location)}`,
     level && `<b>Level:</b> ${escapeHtml(level)}`,
@@ -154,18 +171,15 @@ export function formatMessage(job: Job, parsed: ParsedJob | null): string {
   const footer = ago ? `\n\n⚡ Posted ${ago}` : "";
 
   const descBudget = DELIVERY.MAX_LENGTH - headerText.length - footer.length - "\n\n".length;
+  if (descBudget <= 200) return headerText + footer;
 
-  let description = "";
-  if (descBudget > 200) {
-    const rendered = parsed && hasContent(parsed) ? renderParsedDescription(parsed, descBudget) : "";
-    const desc = rendered || (job.description ? fallbackDescription(job.description, descBudget) : "");
-    if (desc) description = `\n\n${desc}`;
-  }
+  const rendered = parsed && hasContent(parsed) ? renderParsedDescription(parsed, descBudget) : "";
+  const desc =
+    rendered || (job.description ? fallbackDescription(job.description, descBudget) : "");
+  if (!desc) return headerText + footer;
 
-  const message = headerText + description + footer;
-  if (message.length > DELIVERY.MAX_LENGTH) {
-    // Drop description to avoid cutting HTML tags
-    return (headerText + footer).substring(0, DELIVERY.MAX_LENGTH);
-  }
+  const message = `${headerText}\n\n${desc}${footer}`;
+  // drop description rather than substring would cut HTML tags
+  if (message.length > DELIVERY.MAX_LENGTH) return headerText + footer;
   return message;
 }
