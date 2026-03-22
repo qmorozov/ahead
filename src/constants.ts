@@ -35,7 +35,6 @@ export const PENALTY = {
   FOREIGN_LANGUAGE: -15, // points - description detected as non-English
   FOREIGN_TECH: -15, // points - specialist tech in title user doesn't know (per occurrence)
   RELOCATION: -15, // points - description requires relocation
-  ARRANGEMENT_MISMATCH: -20, // points - onsite job for a remote-seeking user
 } as const;
 
 /**

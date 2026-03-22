@@ -437,7 +437,7 @@ const CUSTOM_ROUTES: readonly CallbackRoute[] = [
   {
     prefix: "set:intv:",
     handle(raw, s, ctx, chatId, msgId) {
-      const value = parseInt(raw, 10);
+      const value = Math.max(5, Math.min(1440, parseInt(raw, 10) || 30));
       s.checkIntervalMinutes = value;
       saveSettings(s);
       fireIntervalChanged();
@@ -447,7 +447,7 @@ const CUSTOM_ROUTES: readonly CallbackRoute[] = [
   {
     prefix: "set:age:",
     handle(raw, s, ctx, chatId, msgId) {
-      const value = parseInt(raw, 10);
+      const value = Math.max(0, Math.min(30, parseInt(raw, 10) || 2));
       s.maxJobAgeDays = value;
       saveSettings(s);
       showAgeEditor(ctx, chatId, value, msgId);
@@ -456,7 +456,7 @@ const CUSTOM_ROUTES: readonly CallbackRoute[] = [
   {
     prefix: "set:sal:",
     handle(raw, s, ctx, chatId, msgId) {
-      s.minSalaryUsd = parseInt(raw, 10);
+      s.minSalaryUsd = Math.max(0, Math.min(1_000_000, parseInt(raw, 10) || 0));
       saveSettings(s);
       showSalaryEditor(ctx, chatId, s, msgId);
     },

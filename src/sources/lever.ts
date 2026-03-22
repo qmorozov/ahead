@@ -20,6 +20,7 @@ const JobSchema = z.object({
 
 const ResponseSchema = z.array(JobSchema).default([]);
 
+/** Fetch jobs from tracked Lever ATS boards. */
 export const fetchLever = createATSBoardFetcher({
   platform: "lever",
   label: "Lever",

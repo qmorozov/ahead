@@ -39,7 +39,7 @@ const JOB_TYPE_MAP: Record<string, string> = {
   intern: "internship",
 };
 
-// "Full-Time" / "full_time" / "fulltime" → "full-time"
+/** Normalize job type variants to canonical form: "Full-Time" / "full_time" → "full-time". */
 export function normalizeJobType(raw: string): string | undefined {
   return JOB_TYPE_MAP[raw.toLowerCase().replace(/[\s-]+/g, "_")];
 }
@@ -59,7 +59,6 @@ const TITLE_NORMALIZATIONS: readonly [RegExp, string][] = [
 
 const COMPANY_STRIP = /\b(inc|llc|ltd|corp|co|gmbh|ag|plc|s\.?a\.?|b\.?v\.?)\b\.?/gi;
 
-// Strip punctuation, collapse whitespace, lowercase
 function cleanText(s: string): string {
   return s
     .toLowerCase()
@@ -68,7 +67,7 @@ function cleanText(s: string): string {
     .trim();
 }
 
-// "Sr React Dev at Acme Inc" → "senior react developer::acme"
+/** Normalize title+company for cross-source dedup: "Sr React Dev at Acme Inc" → "senior react developer::acme". */
 export function normalizeForDedup(title: string, company: string): string {
   let t = title.toLowerCase().trim();
   for (const [re, rep] of TITLE_NORMALIZATIONS) t = t.replace(re, rep);
@@ -78,7 +77,6 @@ export function normalizeForDedup(title: string, company: string): string {
   return `${cleanText(t)}::${cleanText(c)}`;
 }
 
-// Split on commas, trim, lowercase (for tech keywords)
 export function parseCommaSeparated(text: string): string[] {
   return text
     .split(",")
@@ -86,7 +84,6 @@ export function parseCommaSeparated(text: string): string[] {
     .filter(Boolean);
 }
 
-// Split on commas, trim, preserve case (for roles, locations)
 export function parseCommaSeparatedRaw(text: string): string[] {
   return text
     .split(",")

@@ -8,6 +8,13 @@ import { ROLE_CONFIGS, GENERIC_DEV_PATTERN } from "./roles";
 import { matchesSeniority, seniorityDetected } from "./seniority";
 import type { ScorerInput, ScorerResult } from "./index";
 
+// franc returns ISO 639-3 codes; map user-facing language names to those codes
+const LANG_TO_FRANC: Readonly<Record<string, string>> = {
+  english: "eng", chinese: "cmn", spanish: "spa", german: "deu", french: "fra",
+  portuguese: "por", japanese: "jpn", korean: "kor", dutch: "nld", italian: "ita",
+  polish: "pol", russian: "rus", ukrainian: "ukr", turkish: "tur", arabic: "arb",
+};
+
 const STAFFING_AGENCY_RE =
   /\b(confidential|staffing|recruiting|recruitment|talent\s*(solution|acquisition|partner)|manpower|hays|robert\s*half|adecco|randstad|modis|kforce|tek\s*systems|insight\s*global)\b/i;
 
@@ -300,9 +307,14 @@ export function scoreJobQuality({ job, parsed, ctx, analysis }: ScorerInput): Sc
 
   if (analysis.desc.length >= 50 && !analysis.hasParsedTags) {
     const lang = franc(analysis.desc, { minLength: 50 });
-    if (lang !== "und" && lang !== "eng") {
-      score += PENALTY.FOREIGN_LANGUAGE;
-      signals.push(`lang:${lang}`);
+    if (lang !== "und") {
+      const acceptedCodes = new Set(
+        [...ctx.acceptedLanguages].map((l) => LANG_TO_FRANC[l] ?? l).filter(Boolean),
+      );
+      if (!acceptedCodes.has(lang)) {
+        score += PENALTY.FOREIGN_LANGUAGE;
+        signals.push(`lang:${lang}`);
+      }
     }
   }
 
@@ -331,8 +343,7 @@ export function scoreJobQuality({ job, parsed, ctx, analysis }: ScorerInput): Sc
     parsed?.workArrangement === "onsite" &&
     ctx.workArrangement.some((w) => w.toLowerCase() === "remote")
   ) {
-    score += PENALTY.ARRANGEMENT_MISMATCH;
-    signals.push("onsite only");
+    return { score: 0, signals: ["onsite only"], hardReject: true };
   }
 
   return { score, signals };

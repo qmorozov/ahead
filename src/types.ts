@@ -36,7 +36,7 @@ export const ParsedJobSchema = z.object({
   locationRestriction: z.string().max(100).nullable().catch(null),
 });
 
-/** Structured data extracted from a job description by the LLM pipeline. */
+/** LLM-parsed job description data. */
 export type ParsedJob = z.infer<typeof ParsedJobSchema>;
 
 /** Unique key for deduplication: `source::id`. */
@@ -44,7 +44,7 @@ export function jobKey(job: Job): string {
   return `${job.source.toLowerCase()}::${job.id}`;
 }
 
-/** Returns true if the parsed result has any meaningful content (not empty). */
+/** True if the parse has any useful fields filled in. */
 export function hasContent(parsed: ParsedJob): boolean {
   return (
     parsed.requirements.length > 0 ||

@@ -6,7 +6,7 @@ export interface RejectedJob {
   reason: string;
 }
 
-/** In-memory poll statistics for a single user, shown via /status. */
+/** Per-cycle poll stats, shown in /status. */
 export interface UserPollStats {
   checked: number;
   passed: number;
@@ -43,7 +43,6 @@ export function pruneInactiveStats(activeIds: Set<string>): void {
   }
 }
 
-/** Update stats after a poll cycle: add counts and append rejected jobs. */
 export function updatePollStats(
   stats: UserPollStats,
   checkedCount: number,
@@ -51,8 +50,10 @@ export function updatePollStats(
   irrelevant: Array<{ key: string; title: string; company: string; url: string }>,
   signalsMap: Map<string, string[]>,
 ): void {
-  stats.checked += checkedCount;
-  stats.passed += passedCount;
+  stats.checked = checkedCount;
+  stats.passed = passedCount;
+  stats.sent = 0;
+  stats.rejected = [];
   for (const nj of irrelevant) {
     const reasons = signalsMap.get(nj.key) ?? [];
     stats.rejected.push({

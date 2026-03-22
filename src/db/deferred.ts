@@ -23,6 +23,7 @@ const sql = {
   deleteByChat: db.prepare(`DELETE FROM deferred_jobs WHERE chat_id = ?`),
 };
 
+/** Load all deferred jobs updated after the given cutoff into a Map keyed by "chatId::jobKey". */
 export function loadDeferredJobs(
   cutoffMs: number,
 ): Map<string, { cycles: number; updatedAt: number }> {

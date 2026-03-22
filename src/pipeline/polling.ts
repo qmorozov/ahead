@@ -4,6 +4,7 @@ import {
   buildScoringContext,
   scoreJob,
   computeThreshold,
+  clearCachedContext,
   ScoringContext,
 } from "./filter";
 import { sendJob, sendJobs } from "../bot/delivery";
@@ -31,7 +32,7 @@ import { log, debug } from "../lib/logger";
 import { logUnexpectedError } from "../lib/errors";
 import { Job, ParsedJob, jobKey } from "../types";
 import { parseJobDescription, classifyBatch, quickTagJob } from "./llm";
-import { normalizeForDedup, sleep, runWorkerPool } from "../lib/utils";
+import { normalizeForDedup, runWorkerPool } from "../lib/utils";
 import { enrichJobs } from "./enrich";
 import { UserPollStats, getOrCreateStats, pruneInactiveStats, updatePollStats, clearPollStats } from "./stats";
 
@@ -53,6 +54,7 @@ const lastPolledAt = new Map<string, number>();
 export function clearUserState(chatId: string): void {
   lastPolledAt.delete(chatId);
   clearPollStats(chatId);
+  clearCachedContext(chatId);
   deleteDeferredByChat(chatId);
 }
 
@@ -96,7 +98,8 @@ function collectNewJobs(
   const newJobs: NewJob[] = [];
   const cycleTitles = new Set<string>();
 
-  for (const [, sourceJobs] of jobsBySource) {
+  for (const [sourceName, sourceJobs] of jobsBySource) {
+    if (settings.enabledSources.length > 0 && !settings.enabledSources.includes(sourceName)) continue;
     for (const original of filterJobs(sourceJobs, settings, ctx)) {
       if (!original.title.trim()) continue;
       const key = jobKey(original);
@@ -219,7 +222,7 @@ function classifyByRelevance(
   return { relevant: capped, irrelevant, companyCapped, signalsMap };
 }
 
-/** Split irrelevant jobs into those ready to mark seen vs deferred for re-evaluation. */
+/** Separate rejects into final (mark seen) vs deferred (retry next cycle). */
 function classifyIrrelevant(
   chatId: string,
   irrelevant: NewJob[],
@@ -247,6 +250,19 @@ function classifyIrrelevant(
   return { markSeen: ready, deferredTotal: irrelevant.length - ready.length };
 }
 
+/** Send each job as a separate message. */
+async function deliverIndividually(
+  chatId: string,
+  jobs: NewJob[],
+  getParsed: (nj: NewJob) => ParsedJob | null,
+): Promise<NewJob[]> {
+  const delivered: NewJob[] = [];
+  for (const nj of jobs) {
+    if (await sendJob(chatId, nj.job, getParsed(nj))) delivered.push(nj);
+  }
+  return delivered;
+}
+
 async function deliverJobs(
   chatId: string,
   newJobs: NewJob[],
@@ -262,32 +278,20 @@ async function deliverJobs(
       const ts = new Date(nj.job.publishedAt).getTime();
       return isNaN(ts) || ts > oneDayAgo;
     });
-    const top = fresh.slice(0, 3);
-    if (top.length === 0) return [];
-
-    const delivered: NewJob[] = [];
-    for (const nj of top) {
-      if (await sendJob(chatId, nj.job, getParsed(nj))) delivered.push(nj);
-    }
-    return delivered;
+    return deliverIndividually(chatId, fresh.slice(0, 3), getParsed);
   }
 
   if (newJobs.length <= 3) {
-    const delivered: NewJob[] = [];
-    for (const nj of newJobs) {
-      if (await sendJob(chatId, nj.job, getParsed(nj))) delivered.push(nj);
-    }
-    return delivered;
+    return deliverIndividually(chatId, newJobs, getParsed);
   }
 
   const jobs = newJobs.map((nj) => nj.job);
   const sent = await sendJobs(chatId, jobs, parsedMap, signalsMap);
   const sentKeys = new Set(sent.map(jobKey));
-  const delivered = newJobs.filter((nj) => sentKeys.has(nj.key));
-  return delivered;
+  return newJobs.filter((nj) => sentKeys.has(nj.key));
 }
 
-/** Build a sanitized profile string for LLM classify from user settings. */
+/** User profile summary for LLM classify prompt. */
 function buildUserProfile(settings: UserSettings): string {
   const sanitize = (s: string) =>
     s
@@ -310,10 +314,7 @@ function buildUserProfile(settings: UserSettings): string {
   return profile;
 }
 
-/**
- * Run LLM pre-filter on new jobs. Returns candidates that passed and jobs that were filtered out.
- * Side effect: logs pre-filter stats. Marks all jobs seen if none pass.
- */
+/** LLM pre-filter: marks all seen if nothing passes. */
 async function preFilterByLLM(
   chatId: string,
   allNew: NewJob[],
@@ -345,14 +346,10 @@ async function preFilterByLLM(
   return { candidates, preFilteredJobs };
 }
 
-/**
- * Mark all processed jobs as seen, record delivered count, and mark title dedup keys.
- * Side effects: writes to seen_jobs, seen_titles, and settings tables.
- */
+/** Mark processed jobs as seen, bump counters. */
 function finalizeSeenState(
   chatId: string,
   stats: UserPollStats,
-  firstRun: boolean,
   delivered: NewJob[],
   markSeen: NewJob[],
   companyCapped: NewJob[],
@@ -373,27 +370,12 @@ function finalizeSeenState(
   const titleNormKeys = processedJobs.filter((nj) => nj.job.company).map((nj) => nj.normKey);
   if (titleNormKeys.length > 0) markTitleSeenBatch(chatId, titleNormKeys);
 
-  log(
-    `[${chatId}] ${firstRun ? "First run: " : ""}Sent ${delivered.length} job(s), ${irrelevantCount} irrelevant.`,
-  );
+  log(`[${chatId}] Sent ${delivered.length} job(s), ${irrelevantCount} irrelevant.`);
 }
 
 /**
- * Pipeline orchestrator - runs the full job processing pipeline for a single user.
- *
- * This function is intentionally centralized. Each pipeline step is delegated to a
- * focused function, but the step ordering and data flow between them must live in one
- * place so the full sequence is visible and debuggable.
- *
- * Steps:
- *  1. collectNewJobs     - pre-filter by keyword/location/salary/age, dedup against seen_jobs
- *  2. preFilterByLLM     - lightweight LLM classify to remove obviously irrelevant jobs
- *  3. parseJobs          - full LLM parse (or quick-tag fallback) for surviving candidates
- *  4. classifyByRelevance - run 12 scorers, apply threshold, cap per-company count
- *  5. classifyIrrelevant  - defer unparsed rejects for re-evaluation, finalize parsed rejects
- *  6. enrichJobs         - resolve company URLs (Clearbit) and Djinni metadata
- *  7. deliverJobs        - send individual messages or paginated digest via Telegram
- *  8. finalizeSeenState  - mark all processed jobs as seen, update stats and counters
+ * Full pipeline for one user:
+ *  collect → LLM pre-filter → parse → score → enrich → deliver → mark seen
  */
 async function processForUser(
   settings: UserSettings,
@@ -473,7 +455,6 @@ async function processForUser(
     finalizeSeenState(
       chatId,
       stats,
-      firstRun,
       delivered,
       markSeen,
       companyCapped,
@@ -498,7 +479,7 @@ async function processForUser(
 
 let polling = false;
 
-/** Returns true if a poll cycle is currently in progress. Used for overlap prevention and shutdown. */
+/** True while a poll cycle is running. */
 export function isPolling(): boolean {
   return polling;
 }

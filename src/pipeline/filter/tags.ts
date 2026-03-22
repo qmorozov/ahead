@@ -7,54 +7,52 @@ import {
 } from "../../lib/tech-data";
 import { testKeyword } from "./matching";
 
+/** Strip dots, dashes, spaces, slashes and lowercase: "Node.js" → "nodejs". */
 export function normalizeTag(tag: string): string {
   return tag.toLowerCase().replace(/[.\-\s/]/g, "");
 }
 
-const SKIP_KEYWORD_EXPAND = new Set(["go", "c", "r", "js", "ts", "py"]);
+function resolveCanonical(kw: string): { canonical: string; synonyms: string[] } | null {
+  const normalized = normalizeTag(kw);
+  // Direct canonical hit (kw is already a canonical name)
+  const directSyns = CANONICAL_TO_SYNONYMS.get(normalized);
+  if (directSyns) return { canonical: normalized, synonyms: directSyns };
+  // Synonym hit (kw is an alias for a canonical name)
+  const canonical =
+    SYNONYM_TO_CANONICAL.get(normalized) ?? SYNONYM_TO_CANONICAL.get(kw.toLowerCase());
+  if (canonical) {
+    return { canonical, synonyms: CANONICAL_TO_SYNONYMS.get(canonical) ?? [] };
+  }
+  return null;
+}
+
+const SKIP_KEYWORD_EXPAND = new Set(["c", "r", "js", "ts", "py"]);
 
 export function expandWithAliases(keywords: string[]): string[] {
   const expanded = new Set(keywords);
   for (const kw of keywords) {
-    const normalized = normalizeTag(kw);
-    const synonyms = CANONICAL_TO_SYNONYMS.get(normalized);
-    if (synonyms) {
-      if (!SKIP_KEYWORD_EXPAND.has(normalized)) expanded.add(normalized);
-      for (const syn of synonyms) {
-        if (!SKIP_KEYWORD_EXPAND.has(syn)) expanded.add(syn);
-      }
-      continue;
-    }
-    const canonical =
-      SYNONYM_TO_CANONICAL.get(normalized) ?? SYNONYM_TO_CANONICAL.get(kw.toLowerCase());
-    if (canonical) {
-      if (!SKIP_KEYWORD_EXPAND.has(canonical)) expanded.add(canonical);
-      const canonSyns = CANONICAL_TO_SYNONYMS.get(canonical);
-      if (canonSyns)
-        for (const syn of canonSyns) {
-          if (!SKIP_KEYWORD_EXPAND.has(syn)) expanded.add(syn);
-        }
+    const resolved = resolveCanonical(kw);
+    if (!resolved) continue;
+    if (!SKIP_KEYWORD_EXPAND.has(resolved.canonical)) expanded.add(resolved.canonical);
+    for (const syn of resolved.synonyms) {
+      if (!SKIP_KEYWORD_EXPAND.has(syn)) expanded.add(syn);
     }
   }
   return [...expanded];
 }
 
+/** Build a Set of all normalized forms for matching (canonical + synonyms + implies). */
 export function buildTagSet(keywords: string[]): Set<string> {
   const set = new Set<string>();
   for (const kw of keywords) {
     const normalized = normalizeTag(kw);
     set.add(normalized);
-    const canonical =
-      SYNONYM_TO_CANONICAL.get(normalized) ?? SYNONYM_TO_CANONICAL.get(kw.toLowerCase());
-    const resolvedCanonical =
-      canonical ?? (CANONICAL_TO_SYNONYMS.has(normalized) ? normalized : null);
-    if (resolvedCanonical) {
-      set.add(resolvedCanonical);
-      const synonyms = CANONICAL_TO_SYNONYMS.get(resolvedCanonical);
-      if (synonyms) for (const syn of synonyms) set.add(normalizeTag(syn));
-      const implies = CANONICAL_TO_IMPLIES.get(resolvedCanonical);
-      if (implies) for (const imp of implies) set.add(normalizeTag(imp));
-    }
+    const resolved = resolveCanonical(kw);
+    if (!resolved) continue;
+    set.add(resolved.canonical);
+    for (const syn of resolved.synonyms) set.add(normalizeTag(syn));
+    const implies = CANONICAL_TO_IMPLIES.get(resolved.canonical);
+    if (implies) for (const imp of implies) set.add(normalizeTag(imp));
   }
   return set;
 }
@@ -152,4 +150,5 @@ const GENERIC_TOOLS_RAW = [
   "elk stack",
 ];
 
+/** Tools common enough that they don't differentiate stacks (git, docker, sql, etc.). */
 export const GENERIC_TOOLS = new Set(GENERIC_TOOLS_RAW.flatMap((t) => [t, normalizeTag(t)]));

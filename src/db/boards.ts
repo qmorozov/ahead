@@ -63,6 +63,7 @@ export function getActiveSlugs(platform: string): string[] {
   return slugs(sql.active.all(platform));
 }
 
+/** Return active slugs that haven't been checked recently (adaptive back-off for 304s). */
 export function getStaleSlugs(platform: string, maxAgeSeconds: number): string[] {
   return slugs(sql.stale.all(platform, maxAgeSeconds));
 }
@@ -86,6 +87,7 @@ export function setEtag(slug: string, platform: string, etag: string | null): vo
   sql.setEtag.run(etag, slug, platform);
 }
 
+/** Bump the consecutive-304 counter (used to back off stale board polling). */
 export function increment304(slug: string, platform: string): void {
   sql.increment304.run(slug, platform);
 }

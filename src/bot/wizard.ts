@@ -15,7 +15,6 @@ import {
   LANGUAGE_PRESETS,
   EXCLUDE_PRESETS,
   ALL_SOURCE_NAMES,
-  PRIMARY_STACK_SIZE,
   STEP_FLOW,
   STEP_BACK,
   STEP_LABELS,
@@ -244,9 +243,7 @@ async function finishWizard(ctx: Context, session: WizardSession): Promise<void>
   const chatId = session.chatId;
   const s = loadSettings(chatId) ?? createDefaultSettings(chatId);
 
-  const allTechs = session.technologies.slice(0, WIZARD.MAX_ARRAY_ITEMS);
-  s.primaryStack = allTechs.slice(0, PRIMARY_STACK_SIZE);
-  s.keywords = allTechs;
+  s.keywords = session.technologies.slice(0, WIZARD.MAX_ARRAY_ITEMS);
   s.roles = [...session.roles].slice(0, WIZARD.MAX_ARRAY_ITEMS);
   s.seniority = [...session.seniority].slice(0, WIZARD.MAX_ARRAY_ITEMS);
   s.jobTypes = [...session.jobTypes].slice(0, WIZARD.MAX_ARRAY_ITEMS);

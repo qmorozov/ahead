@@ -18,6 +18,7 @@ function getPattern(kw: string): RegExp {
   return re;
 }
 
+/** Test if a keyword appears in text (word-boundary aware, case-insensitive). */
 export function testKeyword(text: string, kw: string): boolean {
   return getPattern(kw).test(text);
 }

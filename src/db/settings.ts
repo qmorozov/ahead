@@ -30,11 +30,11 @@ function jsonArray(raw: string): string[] {
   }
 }
 
+/** All user preferences, stored as JSON arrays in SQLite. */
 export interface UserSettings {
   chatId: string;
   roles: string[];
   keywords: string[];
-  primaryStack: string[];
   excludeKeywords: string[];
   locations: string[];
   seniority: string[];
@@ -49,12 +49,12 @@ export interface UserSettings {
   jobsSent: number;
 }
 
+/** Fresh settings for a new user (pre-onboarding). */
 export function createDefaultSettings(chatId: string): UserSettings {
   return {
     chatId,
     roles: [],
     keywords: [],
-    primaryStack: [],
     excludeKeywords: [],
     locations: [],
     seniority: [],
@@ -70,6 +70,7 @@ export function createDefaultSettings(chatId: string): UserSettings {
   };
 }
 
+/** True if the user has set at least one keyword or role. */
 export function isOnboarded(settings: UserSettings): boolean {
   return settings.keywords.length > 0 || settings.roles.length > 0;
 }
@@ -79,12 +80,12 @@ const sql = {
   getAll: db.prepare(`SELECT * FROM settings`),
   getOnboarded: db.prepare(`SELECT * FROM settings WHERE keywords != '[]' OR roles != '[]'`),
   upsert: db.prepare(`
-    INSERT INTO settings (chat_id, roles, keywords, primary_stack, exclude_keywords, locations, seniority, job_types,
+    INSERT INTO settings (chat_id, roles, keywords, exclude_keywords, locations, seniority, job_types,
       work_arrangement, accepted_languages, enabled_sources, min_salary_usd, check_interval_minutes, max_job_age_days, paused, jobs_sent)
-    VALUES (@chat_id, @roles, @keywords, @primary_stack, @exclude_keywords, @locations, @seniority, @job_types,
+    VALUES (@chat_id, @roles, @keywords, @exclude_keywords, @locations, @seniority, @job_types,
       @work_arrangement, @accepted_languages, @enabled_sources, @min_salary_usd, @check_interval_minutes, @max_job_age_days, @paused, 0)
     ON CONFLICT(chat_id) DO UPDATE SET
-      roles = @roles, keywords = @keywords, primary_stack = @primary_stack, exclude_keywords = @exclude_keywords,
+      roles = @roles, keywords = @keywords, exclude_keywords = @exclude_keywords,
       locations = @locations, seniority = @seniority, job_types = @job_types,
       work_arrangement = @work_arrangement, accepted_languages = @accepted_languages, enabled_sources = @enabled_sources,
       min_salary_usd = @min_salary_usd, check_interval_minutes = @check_interval_minutes,
@@ -99,7 +100,6 @@ function rowToSettings(row: z.infer<typeof SettingsRowSchema>): UserSettings {
     chatId: row.chat_id,
     roles: jsonArray(row.roles),
     keywords: jsonArray(row.keywords),
-    primaryStack: jsonArray(row.primary_stack),
     excludeKeywords: jsonArray(row.exclude_keywords),
     locations: jsonArray(row.locations),
     seniority: jsonArray(row.seniority),
@@ -144,7 +144,6 @@ export function saveSettings(settings: UserSettings): void {
     chat_id: settings.chatId,
     roles: JSON.stringify(settings.roles),
     keywords: JSON.stringify(settings.keywords),
-    primary_stack: JSON.stringify(settings.primaryStack),
     exclude_keywords: JSON.stringify(settings.excludeKeywords),
     locations: JSON.stringify(settings.locations),
     seniority: JSON.stringify(settings.seniority),
@@ -171,6 +170,7 @@ export function incrementJobsSent(chatId: string, count: number): void {
   sql.incrementJobsSent.run(count, chatId);
 }
 
+/** Pause delivery for a user who blocked the bot (403). */
 export function markUserBlocked(chatId: string): void {
   sql.pause.run(chatId);
 }
@@ -179,6 +179,7 @@ const deleteStatements = {
   seenJobs: db.prepare(`DELETE FROM seen_jobs WHERE chat_id = ?`),
   seenTitles: db.prepare(`DELETE FROM seen_titles WHERE chat_id = ?`),
   pendingJobs: db.prepare(`DELETE FROM pending_jobs WHERE chat_id = ?`),
+  deferredJobs: db.prepare(`DELETE FROM deferred_jobs WHERE chat_id = ?`),
   settings: db.prepare(`DELETE FROM settings WHERE chat_id = ?`),
 };
 
@@ -186,9 +187,11 @@ const deleteUserDataTx = db.transaction((chatId: string) => {
   deleteStatements.seenJobs.run(chatId);
   deleteStatements.seenTitles.run(chatId);
   deleteStatements.pendingJobs.run(chatId);
+  deleteStatements.deferredJobs.run(chatId);
   deleteStatements.settings.run(chatId);
 });
 
+/** Delete all data for a user (settings, seen, pending, deferred) in one transaction. */
 export function deleteUserData(chatId: string): void {
   deleteUserDataTx(chatId);
 }

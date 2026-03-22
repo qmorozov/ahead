@@ -71,6 +71,7 @@ function formatStats(
   return `${label}: ${parts.join(", ")}`;
 }
 
+/** Create a reusable fetcher that polls ATS boards with ETag caching and batch concurrency. */
 export function createATSBoardFetcher(config: ATSBoardConfig): () => Promise<Job[]> {
   const jobsBySlug = new Map<string, Job[]>();
   const timeoutStrikes = new Map<string, number>();

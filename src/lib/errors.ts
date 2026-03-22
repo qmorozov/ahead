@@ -1,12 +1,12 @@
 import { log } from "./logger";
 
-// Expected failure (network, API) - log message only
+/** Log an expected failure (network, API) — message only, no stack. */
 export function logOperationalError(context: string, error: unknown): void {
   const msg = error instanceof Error ? error.message : String(error);
   log(`[${context}] ${msg}`);
 }
 
-// Unexpected failure - log full stack trace
+/** Log an unexpected failure — full stack trace. */
 export function logUnexpectedError(context: string, error: unknown): void {
   const msg = error instanceof Error ? (error.stack ?? error.message) : String(error);
   log(`[UNEXPECTED][${context}] ${msg}`);

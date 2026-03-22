@@ -14,7 +14,12 @@ import { sleep } from "../lib/utils";
 import { DELIVERY } from "../constants";
 import { toRows } from "./keyboards";
 
-let api: Api;
+let api: Api | undefined;
+
+function getApi(): Api {
+  if (!api) throw new Error("delivery: initPendingJobs() must be called before sending messages");
+  return api;
+}
 
 const pendingJobs = new Map<string, PendingJobEntry>();
 const STORE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -80,7 +85,7 @@ export async function sendJob(
   parsed: ParsedJob | null = null,
 ): Promise<boolean> {
   return sendWithRetry("Telegram", () =>
-    api.sendMessage(chatId, formatMessage(job, parsed), {
+    getApi().sendMessage(chatId, formatMessage(job, parsed), {
       parse_mode: "HTML",
       link_preview_options: { is_disabled: true },
       reply_markup: {
@@ -169,7 +174,7 @@ export async function sendJobs(
     allEntries.push(...page.entries);
 
     const pageSent = await sendWithRetry("Telegram digest", () =>
-      api.sendMessage(chatId, page.text, {
+      getApi().sendMessage(chatId, page.text, {
         parse_mode: "HTML",
         link_preview_options: { is_disabled: true },
         reply_markup: { inline_keyboard: page.buttons },

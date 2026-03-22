@@ -1,4 +1,4 @@
-const NON_USD = /\b(eur|gbp|cad|uah|£|€|₴)\b/i;
+const NON_USD = /\b(eur|cad|€)\b/i;
 const USD_RE = /[$]|usd/;
 const HOURLY_RE = /\/\s*h(?:ou)?r|per\s*hour/i;
 const MONTHLY_RE = /\/\s*mo(?:nth)?|per\s*month/i;
@@ -6,10 +6,11 @@ const RANGE_K_RE = /(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*k\b/; // "120k-
 const K_RE = /(\d+(?:\.\d+)?)\s*k\b/g; // "120k"
 const BIG_NUM_RE = /(?<!\d\.)(\d{4,})/g; // "120000" - 4+ digits, not after decimal
 const ANY_NUM_RE = /(\d+(?:\.\d+)?)/g; // fallback for hourly/monthly ("45/hr")
-const SPACE_DIGIT_RE = /(\d)\s+(\d)/g; // "25 000" -> "25000" (EUR/UAH format)
+const SPACE_DIGIT_RE = /(\d)\s+(\d)/g; // "25 000" -> "25000" (EUR format)
 
-const TO_USD: Readonly<Record<string, number>> = { eur: 1.08, gbp: 1.27, cad: 0.74, uah: 0.024 };
-const CURRENCY_SYMBOLS: Readonly<Record<string, string>> = { "€": "eur", "£": "gbp", "₴": "uah" };
+// Only convert stable major currencies; other currencies (GBP, PLN, UAH, etc.)
+// are shown to the user as-is but don't participate in salary threshold filtering
+export const TO_USD: Readonly<Record<string, number>> = { eur: 1.08, cad: 0.74 };
 
 function extractNums(s: string, hasHourly: boolean, hasMonthly: boolean): number[] {
   const nums: number[] = [];
@@ -61,7 +62,7 @@ export function extractSalaryUsd(
   const currencyMatch = s.match(NON_USD);
   if (currencyMatch) {
     const raw = currencyMatch[1]!.toLowerCase();
-    const code = CURRENCY_SYMBOLS[raw] ?? raw;
+    const code = raw === "€" ? "eur" : raw;
     const rate = TO_USD[code];
     if (!rate) return undefined;
     const result = parseSalaryRange(s.replace(SPACE_DIGIT_RE, "$1$2"));
@@ -73,6 +74,7 @@ export function extractSalaryUsd(
   return parseSalaryRange(s);
 }
 
+/** Format min/max into a display string like "USD 60,000 – 80,000". */
 export function formatSalaryRange(
   min?: number | null,
   max?: number | null,

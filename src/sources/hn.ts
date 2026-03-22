@@ -1,6 +1,5 @@
-import { rssParser, RssItemSchema, stripHtml } from "../lib/utils";
+import { rssParser, RssItemSchema } from "../lib/utils";
 import { Job } from "../types";
-import { quickTagJob } from "../pipeline/llm";
 
 const FEED_URL = "https://hnrss.org/whoishiring/jobs?count=100";
 
@@ -11,20 +10,8 @@ interface ParsedPosting {
   tags: string[];
 }
 
-async function parsePostingWithLLM(text: string): Promise<ParsedPosting> {
-  const snippet = stripHtml(text).slice(0, 300);
-  const result = await quickTagJob(`hn::${snippet.slice(0, 40)}`, snippet);
-  const firstLine = text.split("\n")[0] ?? "";
-  const parts = firstLine.split("|").map((s) => s.trim());
-  return {
-    company: parts[0] ?? "",
-    title: parts[1] ?? firstLine.slice(0, 80),
-    location: parts.find((p) => isLocation(p.toLowerCase())) ?? "",
-    tags: result?.primaryTags ?? [],
-  };
-}
-
-function parsePostingFallback(text: string): ParsedPosting {
+// Parse "Company | Title | Location | Tech1, Tech2" header
+function parsePosting(text: string): ParsedPosting {
   const result: ParsedPosting = { company: "", title: "", location: "", tags: [] };
 
   const firstLine = text.split("\n")[0] ?? "";
@@ -76,7 +63,7 @@ function isTech(s: string): boolean {
   );
 }
 
-/** Fetch jobs from the HN "Who is Hiring?" RSS feed, using LLM tagging with regex fallback. */
+/** Fetch HN "Who is Hiring?" jobs via RSS. */
 export async function fetchHN(): Promise<Job[]> {
   const feed = await rssParser.parseURL(FEED_URL);
   const jobs: Job[] = [];
@@ -89,10 +76,7 @@ export async function fetchHN(): Promise<Job[]> {
     const text = item.contentSnippet ?? item.content ?? "";
     if (text.length < 20) continue;
 
-    let parsed = await parsePostingWithLLM(text);
-    if (parsed.tags.length === 0) {
-      parsed = parsePostingFallback(text);
-    }
+    const parsed = parsePosting(text);
     if (!parsed.company) continue;
 
     jobs.push({

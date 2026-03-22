@@ -232,11 +232,7 @@ async function classifySingleBatch(
   }
 }
 
-/**
- * Full job description parsing with the heavy model.
- * Cached in DB for 30 days. On invalid output, retries once
- * with the Zod error fed back into the prompt.
- */
+/** Full LLM parse (heavy model). Cached 30 days, retries once on bad output. */
 export async function parseJobDescription(
   jobKey: string,
   description: string,
@@ -263,7 +259,6 @@ export async function parseJobDescription(
     return null;
   }
 
-  recordParse();
   log(`LLM parsing [${jobKey}]`);
 
   return parseWithRetry(jobKey, prepareDescription(description));
@@ -271,6 +266,7 @@ export async function parseJobDescription(
 
 async function parseWithRetry(jobKey: string, prepared: string): Promise<ParsedJob> {
   let lastError: string | null = null;
+  let counted = false;
 
   for (let attempt = 0; attempt < MAX_PARSE_ATTEMPTS; attempt++) {
     const prompt = lastError
@@ -278,6 +274,13 @@ async function parseWithRetry(jobKey: string, prepared: string): Promise<ParsedJ
       : PARSE_PROMPT;
 
     const raw = await callLLM("heavy", prompt, prepared, { maxTokens: 500 });
+
+    // only count towards quota if we got a response
+    if (raw !== null && !counted) {
+      recordParse();
+      counted = true;
+    }
+
     const { parsed, error } = tryParseLLMOutput(raw);
 
     if (parsed && hasContent(parsed)) {
@@ -300,10 +303,7 @@ async function parseWithRetry(jobKey: string, prepared: string): Promise<ParsedJ
   return { ...EMPTY_PARSED };
 }
 
-/**
- * Lightweight tagging - extracts only tags + seniority using the light model.
- * Used when the heavy parse budget is exceeded. Results cached as "quick" quality.
- */
+/** Quick-tag fallback (light model) — tags + seniority only, cached as "quick". */
 export async function quickTagJob(jobKey: string, description: string): Promise<ParsedJob | null> {
   const cached = getCachedParse(jobKey);
   if (cached && cached.parsed.requirements.length > 0) return cached.parsed;

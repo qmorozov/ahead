@@ -129,6 +129,7 @@ if (currentVersion < migrations.length) {
   log(`Database migrated from v${currentVersion} to v${migrations.length}`);
 }
 
+/** Force a WAL checkpoint to reclaim disk space. */
 export function checkpointWal(): void {
   db.pragma("wal_checkpoint(TRUNCATE)");
 }

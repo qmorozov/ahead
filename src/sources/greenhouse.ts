@@ -17,6 +17,7 @@ const ResponseSchema = z.object({
   jobs: z.array(JobSchema).default([]),
 });
 
+/** Fetch jobs from tracked Greenhouse ATS boards. */
 export const fetchGreenhouse = createATSBoardFetcher({
   platform: "greenhouse",
   label: "Greenhouse",

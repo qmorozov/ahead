@@ -34,7 +34,6 @@ const sql = {
 
 // Parsed jobs cache (30-day TTL)
 
-// Returns null both when not found and when stored JSON is corrupted
 export function getCachedParse(jobKey: string): CachedParse | null {
   const raw = sql.getParsed.get(jobKey);
   if (!raw) return null;
@@ -57,6 +56,7 @@ export function setCachedParse(
   sql.setParsed.run(jobKey, JSON.stringify(parsed), quality);
 }
 
+/** Remove parsed_jobs entries older than the given number of days (default 30). */
 export function pruneParsedCache(maxAgeDays = 30): void {
   const { changes } = sql.pruneParsed.run(maxAgeDays * SECONDS_PER_DAY);
   if (changes > 0) log(`Pruned ${changes} old parsed_jobs entries`);
@@ -64,7 +64,7 @@ export function pruneParsedCache(maxAgeDays = 30): void {
 
 // Company URL cache (90-day TTL)
 
-// undefined = never looked up, null = looked up but company not found
+/** Fetch a cached company URL; returns undefined if never looked up, null if not found. */
 export function getCachedCompanyUrl(name: string): string | null | undefined {
   const raw = sql.getCompanyUrl.get(name);
   if (!raw) return undefined;
@@ -76,6 +76,7 @@ export function setCachedCompanyUrl(name: string, url: string | null): void {
   sql.setCompanyUrl.run(name, url);
 }
 
+/** Remove company_urls entries older than the given number of days (default 90). */
 export function pruneCompanyUrls(maxAgeDays = 90): void {
   const { changes } = sql.pruneCompanyUrls.run(maxAgeDays * SECONDS_PER_DAY);
   if (changes > 0) log(`Pruned ${changes} old company_urls entries`);

@@ -84,7 +84,10 @@ handlers.on("message:text", async (ctx) => {
       );
       return;
     }
-    s[pending.key] = num;
+    s[pending.key] =
+      pending.key === "checkIntervalMinutes"
+        ? Math.min(num, 1440)
+        : Math.min(num, 30);
     saveSettings(s);
     showSettings(ctx, chatId, s, pending.messageId);
     if (pending.key === "checkIntervalMinutes") fireIntervalChanged();
