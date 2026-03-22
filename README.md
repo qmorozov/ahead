@@ -2,9 +2,9 @@
 
 Telegram bot that monitors remote job boards and sends personalized job alerts.
 
-Aggregates from 12 sources (RemoteOK, Remotive, Jobicy, Himalayas, Arbeitnow, WeWorkRemotely, Djinni, TheMuse, WorkingNomads, RemoteFirstJobs, HN, Adzuna), scores each job against your profile, and sends a ranked digest.
+Aggregates from 14 sources (RemoteOK, Remotive, Jobicy, Himalayas, Arbeitnow, WeWorkRemotely, Djinni, TheMuse, WorkingNomads, RemoteFirstJobs, HN, Adzuna, Greenhouse, Lever), scores each job against your profile, and sends a ranked digest.
 
-Optionally uses Groq and Cerebras (Llama 8B for classification, 70B+ for parsing) to extract structured data from descriptions. Falls back to keyword matching when LLM is unavailable.
+Optionally uses Groq and Cerebras to extract structured data from descriptions (lightweight model for classification, heavy model for parsing). Falls back to keyword matching when LLM is unavailable.
 
 ## Setup
 
@@ -24,12 +24,13 @@ Production: `npm start`
 ## How it works
 
 ```
-12 sources → keyword/location/salary pre-filter
+14 sources → keyword/location/salary/age pre-filter
   → LLM batch classification (optional)
   → LLM structured parsing (optional, cached)
-  → scoring + ranking
-  → dedup across sources
-  → Telegram digest
+  → 12 scorers + hard reject rules
+  → company enrichment (Clearbit, Djinni)
+  → cross-source dedup
+  → Telegram digest or individual messages
 ```
 
 Polling interval configurable per user (default 30 min). Each job parsed once and cached in SQLite. Groq is primary LLM, Cerebras kicks in as fallback when quota is exhausted.
@@ -37,7 +38,10 @@ Polling interval configurable per user (default 30 min). Each job parsed once an
 ## Commands
 
 - `/start` - onboarding (role, tech stack, seniority, salary, location)
-- `/settings` - edit filters, excludes, interval, pause/resume
+- `/settings` - edit filters, excludes, sources, interval, pause/resume
+- `/status` - last check stats, recently skipped jobs
+- `/sources` - source health dashboard
+- `/delete` - delete all your data
 - `/cancel` - cancel current action
 
 ## Tech
