@@ -10,7 +10,7 @@ interface ParsedPosting {
   tags: string[];
 }
 
-// Parse "Company | Title | Location | Tech1, Tech2" header
+// parse "Company | Title | Location | Tech1, Tech2" header
 function parsePosting(text: string): ParsedPosting {
   const result: ParsedPosting = { company: "", title: "", location: "", tags: [] };
 
@@ -63,7 +63,6 @@ function isTech(s: string): boolean {
   );
 }
 
-/** Fetch HN "Who is Hiring?" jobs via RSS. */
 export async function fetchHN(): Promise<Job[]> {
   const feed = await rssParser.parseURL(FEED_URL);
   const jobs: Job[] = [];

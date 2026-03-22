@@ -31,7 +31,6 @@ function applyCompanyUrls(items: Enrichable[], urls: Map<string, string>): void 
   }
 }
 
-/** Enrich jobs with company URLs (Clearbit) and Djinni company/location data. */
 export async function enrichJobs(items: Enrichable[]): Promise<void> {
   const djinniJobs = items.filter(
     (nj) => nj.job.source === "Djinni" && (!nj.job.company || !nj.job.location),

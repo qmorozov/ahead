@@ -2,16 +2,34 @@ import { UserSettings } from "../../db";
 import { Job, ParsedJob } from "../../types";
 import { extractSalaryUsd } from "../../lib/salary";
 import { SCORING } from "../../constants";
-import { expandWithAliases, buildTagSet, normalizeTag, matchesAny, searchableText, inferTagsFromTitle, getStrippedDescription, GENERIC_TOOLS } from "./matching";
+import { EXCLUDE_EXPANSIONS } from "../../bot/presets";
+import {
+  expandWithAliases,
+  buildTagSet,
+  normalizeTag,
+  matchesAny,
+  searchableText,
+  inferTagsFromTitle,
+  getStrippedDescription,
+  GENERIC_TOOLS,
+} from "./matching";
 import { getRoleTerms, getRoleTechSet } from "./roles";
 import { expandLocations, passesLocationCheck } from "./location";
 import {
-  scoreExcludedTech, scoreSeniority, scoreTitleKeywords, scoreTagOverlap,
-  scoreDescriptionKeywords, scoreStackMatch, scoreRole, scoreForeignTech,
-  scoreFreshness, scoreSalary, scoreExcludeKeywords, scoreJobQuality,
+  scoreExcludedTech,
+  scoreSeniority,
+  scoreTitleKeywords,
+  scoreTagOverlap,
+  scoreDescriptionKeywords,
+  scoreStackMatch,
+  scoreRole,
+  scoreForeignTech,
+  scoreFreshness,
+  scoreSalary,
+  scoreExcludeKeywords,
+  scoreJobQuality,
 } from "./scorers";
 
-/** Scoring context derived from user settings. Cached per chatId. */
 export interface ScoringContext {
   expandedKeywords: string[];
   stackKeywords: string[];
@@ -82,6 +100,7 @@ function extractCoreStack(keywords: string[], roleTechs: Set<string>): string[] 
 }
 
 const ctxCache = new Map<string, { hash: string; ctx: ScoringContext }>();
+const MAX_CTX_CACHE = 500;
 
 function settingsHash(settings: UserSettings): string {
   return [
@@ -96,28 +115,42 @@ function settingsHash(settings: UserSettings): string {
   ].join("|");
 }
 
+function expandExcludes(keywords: string[]): string[] {
+  const expanded = [...keywords];
+  for (const kw of keywords) {
+    const extras = EXCLUDE_EXPANSIONS[kw.toLowerCase()];
+    if (extras) for (const e of extras) if (!expanded.includes(e)) expanded.push(e);
+  }
+  return expanded;
+}
+
 export function buildScoringContext(settings: UserSettings): ScoringContext {
   const hash = settingsHash(settings);
   const cached = ctxCache.get(settings.chatId);
   if (cached && cached.hash === hash) return cached.ctx;
   const roleTerms = getRoleTerms(settings.roles);
   const roleTechSet = getRoleTechSet(settings.roles);
+  const excludesWithPairs = expandExcludes(settings.excludeKeywords);
   const ctx: ScoringContext = {
     expandedKeywords: expandWithAliases([...settings.keywords, ...roleTerms]),
     stackKeywords: extractCoreStack(settings.keywords, roleTechSet),
-    expandedExcludes: expandWithAliases(settings.excludeKeywords),
+    expandedExcludes: expandWithAliases(excludesWithPairs),
     tagSet: buildTagSet(settings.keywords),
-    excludeTagSet: buildTagSet(settings.excludeKeywords),
+    excludeTagSet: buildTagSet(excludesWithPairs),
     senioritySet: new Set(settings.seniority.map((s) => s.toLowerCase())),
     roleTechSet,
     roles: settings.roles,
     minSalaryUsd: settings.minSalaryUsd,
-    userNonGenericCount: settings.keywords.filter((kw) => !GENERIC_TOOLS.has(normalizeTag(kw))).length,
+    userNonGenericCount: settings.keywords.filter((kw) => !GENERIC_TOOLS.has(normalizeTag(kw)))
+      .length,
     workArrangement: settings.workArrangement,
     expandedLocations: expandLocations(settings.locations),
     acceptedLanguages: new Set(settings.acceptedLanguages.map((l) => l.toLowerCase())),
   };
   ctxCache.set(settings.chatId, { hash, ctx });
+  if (ctxCache.size > MAX_CTX_CACHE) {
+    ctxCache.delete(ctxCache.keys().next().value!);
+  }
   return ctx;
 }
 
@@ -129,19 +162,24 @@ function analyzeJob(job: Job, parsed: ParsedJob | null): JobAnalysis {
   const parsedTags = parsed?.primaryTags ?? [];
   const hasParsedTags = parsedTags.length > 0;
   const titleTags = inferTagsFromTitle(job.title);
-  const effectiveTags = hasParsedTags
-    ? [...new Set([...parsedTags, ...titleTags])]
-    : titleTags;
+  const effectiveTags = hasParsedTags ? [...new Set([...parsedTags, ...titleTags])] : titleTags;
   const desc = job.description ? getStrippedDescription(job) : "";
   return { desc, titleTags, effectiveTags, parsedTags, hasParsedTags };
 }
 
 const SCORE_MAX =
-  SCORING.TITLE_KEYWORD + SCORING.TAG_KEYWORD + SCORING.TAG_OVERLAP_MAX +
-  SCORING.STRONG_STACK_FIT + SCORING.DESC_KEYWORD_MAX +
-  SCORING.ROLE_MATCH + SCORING.ROLE_TECH_MAX +
-  SCORING.SENIORITY_MATCH + SCORING.FRESHNESS_MAX + SCORING.SALARY_MATCH +
-  SCORING.HIGH_QUALITY_SOURCE + SCORING.COMPANY_SIZE;
+  SCORING.TITLE_KEYWORD +
+  SCORING.TAG_KEYWORD +
+  SCORING.TAG_OVERLAP_MAX +
+  SCORING.STRONG_STACK_FIT +
+  SCORING.DESC_KEYWORD_MAX +
+  SCORING.ROLE_MATCH +
+  SCORING.ROLE_TECH_MAX +
+  SCORING.SENIORITY_MATCH +
+  SCORING.FRESHNESS_MAX +
+  SCORING.SALARY_MATCH +
+  SCORING.HIGH_QUALITY_SOURCE +
+  SCORING.COMPANY_SIZE;
 
 const scorers: Array<[ScorerName, Scorer]> = [
   ["excludedTech", scoreExcludedTech],
@@ -182,12 +220,16 @@ export function scoreJob(job: Job, parsed: ParsedJob | null, ctx: ScoringContext
     signals.push(...r.signals);
   }
 
-  const normalized = Math.round(Math.max(0, total) / SCORE_MAX * 100);
+  const normalized = Math.round((Math.max(0, total) / SCORE_MAX) * 100);
   return { score: total, normalized, signals, breakdown };
 }
 
 export function filterJobs(jobs: Job[], settings: UserSettings, ctx: ScoringContext): Job[] {
-  const { expandedKeywords: searchKeywords, expandedExcludes: excludeKeywords, expandedLocations: locations } = ctx;
+  const {
+    expandedKeywords: searchKeywords,
+    expandedExcludes: excludeKeywords,
+    expandedLocations: locations,
+  } = ctx;
 
   return jobs.filter((job) => {
     const hasExtraContent = job.tags.length > 0 || Boolean(job.description);
@@ -202,11 +244,13 @@ export function filterJobs(jobs: Job[], settings: UserSettings, ctx: ScoringCont
     }
 
     if (settings.minSalaryUsd > 0) {
-      const max = job.salaryMinUsd ?? extractSalaryUsd(job.salary)?.max;
+      const parsed = extractSalaryUsd(job.salary);
+      const max = Math.max(job.salaryMinUsd ?? 0, parsed?.max ?? 0) || undefined;
       if (max !== undefined && max < settings.minSalaryUsd) return false;
     }
 
-    if (settings.jobTypes.length > 0 && job.jobType && !settings.jobTypes.includes(job.jobType)) return false;
+    if (settings.jobTypes.length > 0 && job.jobType && !settings.jobTypes.includes(job.jobType))
+      return false;
 
     if (settings.maxJobAgeDays > 0 && job.publishedAt) {
       const cutoff = Date.now() - settings.maxJobAgeDays * 24 * 60 * 60 * 1000;

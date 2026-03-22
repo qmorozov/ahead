@@ -1,3 +1,4 @@
+import https from "node:https";
 import axios, { AxiosError } from "axios";
 import { Job } from "../types";
 import {
@@ -10,7 +11,9 @@ import {
   reset304,
 } from "../db";
 import { log, debug } from "../lib/logger";
-import { errorMessage } from "../lib/utils";
+import { errorMessage, sleep } from "../lib/utils";
+
+const keepAliveAgent = new https.Agent({ keepAlive: true });
 
 interface ATSBoardConfig {
   platform: string;
@@ -21,6 +24,8 @@ interface ATSBoardConfig {
   requestParams?: Record<string, string>;
   parseJobs: (data: unknown, slug: string) => Job[];
   accept429?: boolean;
+  timeoutMs?: number;
+  batchDelayMs?: number;
 }
 
 interface FetchResult {
@@ -35,8 +40,6 @@ interface CycleStats {
   timeouts: number;
   rateLimited: number;
   errors: number;
-  newJobs: number;
-  withDescription: number;
 }
 
 function emptyStats(): CycleStats {
@@ -47,8 +50,6 @@ function emptyStats(): CycleStats {
     timeouts: 0,
     rateLimited: 0,
     errors: 0,
-    newJobs: 0,
-    withDescription: 0,
   };
 }
 
@@ -67,11 +68,9 @@ function formatStats(
   if (stats.timeouts > 0) parts.push(`timeout:${stats.timeouts}`);
   if (stats.rateLimited > 0) parts.push(`429:${stats.rateLimited}`);
   if (stats.errors > 0) parts.push(`err:${stats.errors}`);
-  if (stats.newJobs > 0) parts.push(`+${stats.newJobs} new`);
   return `${label}: ${parts.join(", ")}`;
 }
 
-/** Create a reusable fetcher that polls ATS boards with ETag caching and batch concurrency. */
 export function createATSBoardFetcher(config: ATSBoardConfig): () => Promise<Job[]> {
   const jobsBySlug = new Map<string, Job[]>();
   const timeoutStrikes = new Map<string, number>();
@@ -88,8 +87,9 @@ export function createATSBoardFetcher(config: ATSBoardConfig): () => Promise<Job
       headers: resHeaders,
     } = await axios.get(config.buildUrl(slug), {
       params: config.requestParams,
-      timeout: 5000,
+      timeout: config.timeoutMs ?? 5000,
       headers,
+      httpsAgent: keepAliveAgent,
       validateStatus: (s) => s === 200 || s === 304 || (config.accept429 === true && s === 429),
     });
 
@@ -120,10 +120,7 @@ export function createATSBoardFetcher(config: ATSBoardConfig): () => Promise<Job
     if (!warmup) reset304(slug, config.platform);
 
     if (result.jobs.length > 0) {
-      const prevCount = jobsBySlug.get(slug)?.length ?? 0;
       jobsBySlug.set(slug, result.jobs);
-      stats.newJobs += Math.max(0, result.jobs.length - prevCount);
-      stats.withDescription += result.jobs.filter((j) => Boolean(j.description)).length;
     } else {
       jobsBySlug.delete(slug);
     }
@@ -149,8 +146,8 @@ export function createATSBoardFetcher(config: ATSBoardConfig): () => Promise<Job
       stats.timeouts++;
       const strikes = (timeoutStrikes.get(slug) ?? 0) + 1;
       timeoutStrikes.set(slug, strikes);
-      // Don't deactivate boards on warmup - transient timeouts during mass fetch are normal.
-      // Only deactivate after 3 consecutive timeout strikes during regular cycles.
+      // don't deactivate boards on warmup transient timeouts during mass fetch are normal
+      // Only deactivate after 3 consecutive timeout strikes during regular cycles
       if (!warmup && strikes >= 3) {
         updateBoard(slug, config.platform, false, 0);
         jobsBySlug.delete(slug);
@@ -200,6 +197,10 @@ export function createATSBoardFetcher(config: ATSBoardConfig): () => Promise<Job
       if (stats.rateLimited > 5) {
         log(`${config.label}: too many 429s, stopping early`);
         break;
+      }
+
+      if (config.batchDelayMs && i + config.batchSize < checkSlugs.length) {
+        await sleep(config.batchDelayMs);
       }
     }
 

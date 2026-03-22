@@ -1,4 +1,3 @@
-// LLM orchestrator - tries providers in order, falls through on failure, caches results.
 import { z } from "zod";
 import { config } from "../../config";
 import {
@@ -40,8 +39,7 @@ async function callLLM(
 // Hourly parse budget - shared across all providers to prevent 429 storms
 const HOUR_MS = 3_600_000;
 
-// In-memory tracking: count of recent parses for O(1) availability check.
-// DB is written on every recordParse for restart persistence; in-memory is authoritative at runtime.
+// DB persists for restart recovery; in-memory count is authoritative at runtime
 pruneParseTimestamps(Date.now() - HOUR_MS);
 let parseCount = countRecentParses(Date.now() - HOUR_MS);
 let lastPruneAt = Date.now();
@@ -160,10 +158,7 @@ export interface ClassifyInput {
   tags: string[];
 }
 
-/**
- * Pre-filter jobs by relevance using a lightweight LLM call.
- * Fail-open: if LLM is down or returns garbage, all jobs pass through.
- */
+// fail-open all jobs pass through if LLM is unavailable
 export async function classifyBatch(
   jobs: ClassifyInput[],
   userProfile: string,
@@ -206,7 +201,6 @@ export async function classifyBatch(
   return relevant;
 }
 
-/** Returns 1-based indices of relevant jobs, or null if LLM can't answer. */
 async function classifySingleBatch(
   batchSize: number,
   userProfile: string,
@@ -232,7 +226,10 @@ async function classifySingleBatch(
   }
 }
 
-/** Full LLM parse (heavy model). Cached 30 days, retries once on bad output. */
+// dedup concurrent parses for the same job
+const inFlightParses = new Map<string, Promise<ParsedJob | null>>();
+const inFlightQuickTags = new Map<string, Promise<ParsedJob | null>>();
+
 export async function parseJobDescription(
   jobKey: string,
   description: string,
@@ -245,6 +242,9 @@ export async function parseJobDescription(
     }
     debug(`LLM upgrading quick parse [${jobKey}]`);
   }
+
+  const existing = inFlightParses.get(jobKey);
+  if (existing) return existing;
 
   if (!isParseAvailable()) {
     debug(`LLM skip [${jobKey}]: quota full`);
@@ -261,7 +261,13 @@ export async function parseJobDescription(
 
   log(`LLM parsing [${jobKey}]`);
 
-  return parseWithRetry(jobKey, prepareDescription(description));
+  const promise = parseWithRetry(jobKey, prepareDescription(description));
+  inFlightParses.set(jobKey, promise);
+  try {
+    return await promise;
+  } finally {
+    inFlightParses.delete(jobKey);
+  }
 }
 
 async function parseWithRetry(jobKey: string, prepared: string): Promise<ParsedJob> {
@@ -275,7 +281,6 @@ async function parseWithRetry(jobKey: string, prepared: string): Promise<ParsedJ
 
     const raw = await callLLM("heavy", prompt, prepared, { maxTokens: 500 });
 
-    // only count towards quota if we got a response
     if (raw !== null && !counted) {
       recordParse();
       counted = true;
@@ -289,7 +294,6 @@ async function parseWithRetry(jobKey: string, prepared: string): Promise<ParsedJ
       return parsed;
     }
 
-    // Nothing to retry with - LLM returned empty or null
     if (!error || !raw) {
       log(`LLM empty result [${jobKey}]`);
       return parsed ?? { ...EMPTY_PARSED };
@@ -303,12 +307,24 @@ async function parseWithRetry(jobKey: string, prepared: string): Promise<ParsedJ
   return { ...EMPTY_PARSED };
 }
 
-/** Quick-tag fallback (light model) — tags + seniority only, cached as "quick". */
 export async function quickTagJob(jobKey: string, description: string): Promise<ParsedJob | null> {
   const cached = getCachedParse(jobKey);
   if (cached && cached.parsed.requirements.length > 0) return cached.parsed;
   if (!description || description.trim().length < MIN_DESCRIPTION_LENGTH) return null;
 
+  const existing = inFlightQuickTags.get(jobKey);
+  if (existing) return existing;
+
+  const promise = doQuickTag(jobKey, description);
+  inFlightQuickTags.set(jobKey, promise);
+  try {
+    return await promise;
+  } finally {
+    inFlightQuickTags.delete(jobKey);
+  }
+}
+
+async function doQuickTag(jobKey: string, description: string): Promise<ParsedJob | null> {
   const raw = await callLLM("light", QUICK_TAG_PROMPT, prepareDescription(description), {
     maxTokens: 200,
   });

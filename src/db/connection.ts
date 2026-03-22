@@ -24,7 +24,6 @@ const migrations: string[] = [
     chat_id TEXT PRIMARY KEY,
     roles TEXT NOT NULL DEFAULT '[]',
     keywords TEXT NOT NULL DEFAULT '[]',
-    primary_stack TEXT NOT NULL DEFAULT '[]',
     exclude_keywords TEXT NOT NULL DEFAULT '[]',
     locations TEXT NOT NULL DEFAULT '[]',
     seniority TEXT NOT NULL DEFAULT '[]',
@@ -108,6 +107,7 @@ const migrations: string[] = [
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (chat_id, job_key)
   );
+  CREATE INDEX IF NOT EXISTS idx_deferred_updated ON deferred_jobs(updated_at);
 
   CREATE TABLE IF NOT EXISTS source_health (
     source TEXT PRIMARY KEY,
@@ -129,7 +129,6 @@ if (currentVersion < migrations.length) {
   log(`Database migrated from v${currentVersion} to v${migrations.length}`);
 }
 
-/** Force a WAL checkpoint to reclaim disk space. */
 export function checkpointWal(): void {
   db.pragma("wal_checkpoint(TRUNCATE)");
 }

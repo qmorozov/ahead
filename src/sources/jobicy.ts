@@ -39,7 +39,7 @@ export async function fetchJobicy(): Promise<Job[]> {
     salary: formatSalaryRange(j.annualSalaryMin, j.annualSalaryMax, j.salaryCurrency),
     salaryMinUsd:
       j.salaryCurrency?.toUpperCase() === "USD" ? (j.annualSalaryMin ?? undefined) : undefined,
-    jobType: normalizeJobType(Array.isArray(j.jobType) ? j.jobType[0] ?? "" : j.jobType),
+    jobType: normalizeJobType(Array.isArray(j.jobType) ? (j.jobType[0] ?? "") : j.jobType),
     description: j.jobDescription || j.jobExcerpt,
     url: j.url,
     source: "Jobicy",

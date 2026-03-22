@@ -24,7 +24,7 @@ async function lookupCompanyUrl(name: string): Promise<LookupResult> {
     }
     return { url: null, transientError: false }; // genuinely not found
   } catch {
-    return { url: null, transientError: true }; // network/timeout - don't cache
+    return { url: null, transientError: true }; // network/timeout don't cache
   }
 }
 
@@ -38,12 +38,6 @@ async function resolveCompanyUrl(name: string): Promise<string | null> {
   return url;
 }
 
-/**
- * Resolve company website URLs for jobs that lack them, using the Clearbit API.
- * Results are cached in the DB. Processes in batches of 5 for rate limiting.
- *
- * @returns Map from lowercase company name to resolved URL.
- */
 export async function resolveCompanyUrls(jobs: Job[]): Promise<Map<string, string>> {
   const uniqueCompanies = new Map<string, string>();
   for (const job of jobs) {

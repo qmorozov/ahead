@@ -22,30 +22,32 @@ const ResponseSchema = z.object({
   results: z.array(JobSchema).default([]),
 });
 
-const REMOTE_PATTERN = /\bremote\b|flexible/i;
-
 export async function fetchTheMuse(): Promise<Job[]> {
-  const { data } = await axios.get(
-    "https://www.themuse.com/api/public/jobs?page=0&descending=true&location=Flexible%20%2F%20Remote",
-    { timeout: HTTP_TIMEOUT },
-  );
-  const { results } = ResponseSchema.parse(data);
+  const jobs: Job[] = [];
 
-  return results
-    .filter((j) => {
-      if (j.locations.length === 0) return true;
-      return j.locations.some((l) => REMOTE_PATTERN.test(l.name));
-    })
-    .map((j) => ({
-      id: j.id,
-      title: j.name,
-      company: j.company.name,
-      location: j.locations.map((l) => l.name).join(", ") || "Remote",
-      description: j.contents,
-      seniority: j.levels[0]?.name || undefined,
-      url: j.refs.landing_page,
-      source: "TheMuse",
-      tags: [...j.categories.map((c) => c.name), ...j.tags],
-      publishedAt: j.publication_date || new Date().toISOString(),
-    }));
+  for (let page = 0; page < 5; page++) {
+    const { data } = await axios.get("https://www.themuse.com/api/public/jobs", {
+      params: { page, descending: true },
+      timeout: HTTP_TIMEOUT,
+    });
+    const { results } = ResponseSchema.parse(data);
+    if (results.length === 0) break;
+
+    for (const j of results) {
+      jobs.push({
+        id: j.id,
+        title: j.name,
+        company: j.company.name,
+        location: j.locations.map((l) => l.name).join(", ") || "Remote",
+        description: j.contents,
+        seniority: j.levels[0]?.name || undefined,
+        url: j.refs.landing_page,
+        source: "TheMuse",
+        tags: [...j.categories.map((c) => c.name), ...j.tags],
+        publishedAt: j.publication_date || new Date().toISOString(),
+      });
+    }
+  }
+
+  return jobs;
 }

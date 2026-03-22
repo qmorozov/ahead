@@ -31,22 +31,34 @@ const ResponseSchema = z.object({
 });
 
 export async function fetchHimalayas(): Promise<Job[]> {
-  const { data } = await axios.get("https://himalayas.app/jobs/api", { timeout: HTTP_TIMEOUT });
-  const { jobs } = ResponseSchema.parse(data);
+  const jobs: Job[] = [];
 
-  return jobs.map((j) => ({
-    id: j.guid,
-    title: j.title,
-    company: j.companyName,
-    location: j.locationRestrictions.length > 0 ? j.locationRestrictions.join(", ") : "Remote",
-    salary: formatSalaryRange(j.minSalary, j.maxSalary, j.currency),
-    salaryMinUsd: j.currency?.toUpperCase() === "USD" ? (j.minSalary ?? undefined) : undefined,
-    description: j.description,
-    seniority: j.seniority[0] || undefined,
-    jobType: j.jobType ? normalizeJobType(j.jobType) : undefined,
-    url: j.applicationLink,
-    source: "Himalayas",
-    tags: j.categories,
-    publishedAt: j.pubDate,
-  }));
+  for (let offset = 0; offset < 200; offset += 20) {
+    const { data } = await axios.get("https://himalayas.app/jobs/api", {
+      params: { offset },
+      timeout: HTTP_TIMEOUT,
+    });
+    const { jobs: page } = ResponseSchema.parse(data);
+    if (page.length === 0) break;
+
+    for (const j of page) {
+      jobs.push({
+        id: j.guid,
+        title: j.title,
+        company: j.companyName,
+        location: j.locationRestrictions.length > 0 ? j.locationRestrictions.join(", ") : "Remote",
+        salary: formatSalaryRange(j.minSalary, j.maxSalary, j.currency),
+        salaryMinUsd: j.currency?.toUpperCase() === "USD" ? (j.minSalary ?? undefined) : undefined,
+        description: j.description,
+        seniority: j.seniority[0] || undefined,
+        jobType: j.jobType ? normalizeJobType(j.jobType) : undefined,
+        url: j.applicationLink,
+        source: "Himalayas",
+        tags: j.categories,
+        publishedAt: j.pubDate,
+      });
+    }
+  }
+
+  return jobs;
 }

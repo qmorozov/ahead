@@ -1,8 +1,3 @@
-/**
- * Cerebras provider - uses raw HTTP (no official SDK).
- * Enforces a 2s minimum gap between calls to stay under their rate limit.
- * On 429, backs off for 5 minutes.
- */
 import axios from "axios";
 import { log, logError } from "../../lib/logger";
 import { errorMessage, sleep } from "../../lib/utils";

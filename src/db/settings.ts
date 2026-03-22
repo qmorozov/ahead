@@ -6,7 +6,6 @@ const SettingsRowSchema = z.object({
   chat_id: z.string(),
   roles: z.string().default("[]"),
   keywords: z.string().default("[]"),
-  primary_stack: z.string().default("[]"),
   exclude_keywords: z.string().default("[]"),
   locations: z.string().default("[]"),
   seniority: z.string().default("[]"),
@@ -30,7 +29,6 @@ function jsonArray(raw: string): string[] {
   }
 }
 
-/** All user preferences, stored as JSON arrays in SQLite. */
 export interface UserSettings {
   chatId: string;
   roles: string[];
@@ -49,7 +47,6 @@ export interface UserSettings {
   jobsSent: number;
 }
 
-/** Fresh settings for a new user (pre-onboarding). */
 export function createDefaultSettings(chatId: string): UserSettings {
   return {
     chatId,
@@ -70,7 +67,6 @@ export function createDefaultSettings(chatId: string): UserSettings {
   };
 }
 
-/** True if the user has set at least one keyword or role. */
 export function isOnboarded(settings: UserSettings): boolean {
   return settings.keywords.length > 0 || settings.roles.length > 0;
 }
@@ -170,7 +166,7 @@ export function incrementJobsSent(chatId: string, count: number): void {
   sql.incrementJobsSent.run(count, chatId);
 }
 
-/** Pause delivery for a user who blocked the bot (403). */
+// called when telegram returns 403 (user blocked bot)
 export function markUserBlocked(chatId: string): void {
   sql.pause.run(chatId);
 }
@@ -191,7 +187,6 @@ const deleteUserDataTx = db.transaction((chatId: string) => {
   deleteStatements.settings.run(chatId);
 });
 
-/** Delete all data for a user (settings, seen, pending, deferred) in one transaction. */
 export function deleteUserData(chatId: string): void {
   deleteUserDataTx(chatId);
 }

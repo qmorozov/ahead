@@ -8,7 +8,6 @@ export function log(msg: string): void {
   console.log(`[${ts()}] [INFO] ${msg}`);
 }
 
-/** Log a DEBUG-level message (only when DEBUG=1). */
 export function debug(msg: string): void {
   if (config.debug) console.log(`[${ts()}] [DEBUG] ${msg}`);
 }

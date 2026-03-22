@@ -18,9 +18,14 @@ for (const entry of TECH_ENTRIES) {
   if (entry.domains.length > 0) CANONICAL_TO_DOMAINS.set(entry.canonical, entry.domains);
 }
 
-// Entries missing from the generated ontology
+// entries missing from the generated ontology
 const EXTRA_ENTRIES = [
-  { canonical: "machine learning", synonyms: ["ml", "deep learning", "dl"], implies: ["python"], domains: ["ml/ai", "data science"] },
+  {
+    canonical: "machine learning",
+    synonyms: ["ml", "deep learning", "dl"],
+    implies: ["python"],
+    domains: ["ml/ai", "data science"],
+  },
 ];
 
 for (const entry of EXTRA_ENTRIES) {
@@ -34,7 +39,6 @@ for (const entry of EXTRA_ENTRIES) {
   if (entry.domains.length > 0) CANONICAL_TO_DOMAINS.set(entry.canonical, entry.domains);
 }
 
-// Reverse map: domain -> all techs in that domain
 export const DOMAIN_TO_TECHS = new Map<string, string[]>();
 for (const [tech, domains] of CANONICAL_TO_DOMAINS) {
   for (const d of domains) {

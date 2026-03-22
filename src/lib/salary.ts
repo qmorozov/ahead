@@ -1,16 +1,16 @@
-const NON_USD = /\b(eur|cad|€)\b/i;
+const NON_USD = /\b(eur|cad|gbp)\b|([£€])/i;
 const USD_RE = /[$]|usd/;
 const HOURLY_RE = /\/\s*h(?:ou)?r|per\s*hour/i;
-const MONTHLY_RE = /\/\s*mo(?:nth)?|per\s*month/i;
+const MONTHLY_RE = /\/\s*mo(?:nth)?|per\s*month|\bmonthly\b/i;
 const RANGE_K_RE = /(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*k\b/; // "120k-150k"
 const K_RE = /(\d+(?:\.\d+)?)\s*k\b/g; // "120k"
 const BIG_NUM_RE = /(?<!\d\.)(\d{4,})/g; // "120000" - 4+ digits, not after decimal
 const ANY_NUM_RE = /(\d+(?:\.\d+)?)/g; // fallback for hourly/monthly ("45/hr")
 const SPACE_DIGIT_RE = /(\d)\s+(\d)/g; // "25 000" -> "25000" (EUR format)
+const DOT_THOUSANDS_RE = /(\d)\.(\d{3})(?!\d)/g; // "4.000" -> "4000" (DE/PL/FR format)
 
-// Only convert stable major currencies; other currencies (GBP, PLN, UAH, etc.)
-// are shown to the user as-is but don't participate in salary threshold filtering
-export const TO_USD: Readonly<Record<string, number>> = { eur: 1.08, cad: 0.74 };
+// Nnn-USD rates for salary threshold comparison only
+export const TO_USD: Readonly<Record<string, number>> = { eur: 1.08, cad: 0.74, gbp: 1.27 };
 
 function extractNums(s: string, hasHourly: boolean, hasMonthly: boolean): number[] {
   const nums: number[] = [];
@@ -31,9 +31,10 @@ const HOURS_PER_YEAR = 2080; // 40h/week * 52 weeks
 const MAX_HOURLY_RATE = 500; // above this, assume annual
 
 function computeMultiplier(hasHourly: boolean, hasMonthly: boolean, nums: number[]): number {
-  const isHourly = hasHourly || nums.every((n) => n < MAX_HOURLY_RATE);
-  if (isHourly) return HOURS_PER_YEAR;
+  if (hasHourly) return HOURS_PER_YEAR;
   if (hasMonthly) return 12;
+  // heuristic fallback no explicit period indicator small numbers -> likely hourly
+  if (nums.every((n) => n < MAX_HOURLY_RATE)) return HOURS_PER_YEAR;
   return 1;
 }
 
@@ -46,13 +47,17 @@ function parseSalaryRange(s: string): { min: number; max: number } | undefined {
   return { min: Math.min(...nums) * multiplier, max: Math.max(...nums) * multiplier };
 }
 
-/**
- * Extract a salary range in USD from a free-text salary string
- * Handles multi-currency conversion, hourly/monthly rates, and k-suffixes
- *
- * @param salary  Raw salary text (e.g. "$120k-150k", "EUR 60,000-80,000/year")
- * @returns Min/max in USD, or undefined if unparseable or non-USD without known conversion
- */
+function normalizeThousands(s: string): string {
+  // DOT_THOUSANDS_RE needs multiple passes for chained groups: "1.200.000" -> "1200.000" -> "1200000"
+  let prev = s;
+  for (;;) {
+    const next = prev.replace(DOT_THOUSANDS_RE, "$1$2");
+    if (next === prev) break;
+    prev = next;
+  }
+  return prev.replace(SPACE_DIGIT_RE, "$1$2");
+}
+
 export function extractSalaryUsd(
   salary: string | undefined,
 ): { min: number; max: number } | undefined {
@@ -61,20 +66,19 @@ export function extractSalaryUsd(
 
   const currencyMatch = s.match(NON_USD);
   if (currencyMatch) {
-    const raw = currencyMatch[1]!.toLowerCase();
-    const code = raw === "€" ? "eur" : raw;
+    const raw = (currencyMatch[1] ?? currencyMatch[2]!).toLowerCase();
+    const code = raw === "€" ? "eur" : raw === "£" ? "gbp" : raw;
     const rate = TO_USD[code];
     if (!rate) return undefined;
-    const result = parseSalaryRange(s.replace(SPACE_DIGIT_RE, "$1$2"));
-    if (!result) return undefined;
-    return { min: Math.round(result.min * rate), max: Math.round(result.max * rate) };
+    const range = parseSalaryRange(normalizeThousands(s));
+    if (!range) return undefined;
+    return { min: Math.round(range.min * rate), max: Math.round(range.max * rate) };
   }
 
   if (!USD_RE.test(s)) return undefined;
-  return parseSalaryRange(s);
+  return parseSalaryRange(normalizeThousands(s));
 }
 
-/** Format min/max into a display string like "USD 60,000 – 80,000". */
 export function formatSalaryRange(
   min?: number | null,
   max?: number | null,

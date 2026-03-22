@@ -3,6 +3,7 @@ function escapeRegex(s: string): string {
 }
 
 const patternCache = new Map<string, RegExp>();
+const MAX_PATTERN_CACHE = 2000;
 
 function getPattern(kw: string): RegExp {
   let re = patternCache.get(kw);
@@ -14,11 +15,13 @@ function getPattern(kw: string): RegExp {
     const suffix = endsWithWord ? "\\b" : "(?:$|\\W)";
     re = new RegExp(`${prefix}${escaped}${suffix}`, "i");
     patternCache.set(kw, re);
+    if (patternCache.size > MAX_PATTERN_CACHE) {
+      patternCache.delete(patternCache.keys().next().value!);
+    }
   }
   return re;
 }
 
-/** Test if a keyword appears in text (word-boundary aware, case-insensitive). */
 export function testKeyword(text: string, kw: string): boolean {
   return getPattern(kw).test(text);
 }
@@ -27,5 +30,11 @@ export function matchesAny(text: string, keywords: string[]): boolean {
   return keywords.some((kw) => testKeyword(text, kw));
 }
 
-export { normalizeTag, expandWithAliases, buildTagSet, inferTagsFromTitle, GENERIC_TOOLS } from "./tags";
+export {
+  normalizeTag,
+  expandWithAliases,
+  buildTagSet,
+  inferTagsFromTitle,
+  GENERIC_TOOLS,
+} from "./tags";
 export { getStrippedDescription, searchableText } from "./description";

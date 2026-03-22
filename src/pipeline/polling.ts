@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import { sources, fetchWithRetry } from "../sources";
 import {
   filterJobs,
@@ -8,6 +10,7 @@ import {
   ScoringContext,
 } from "./filter";
 import { sendJob, sendJobs } from "../bot/delivery";
+import { config } from "../config";
 import { POLLING, LLM } from "../constants";
 import {
   UserSettings,
@@ -15,18 +18,18 @@ import {
   pruneParsedCache,
   pruneCompanyUrls,
   pruneSeen,
-  isSeen,
+  loadSeenKeys,
   markSeenBatch,
   isFirstRun,
   incrementJobsSent,
-  isTitleSeen,
+  loadSeenTitles,
   markTitleSeenBatch,
   pruneSeenTitles,
-  getDeferredCycles,
-  upsertDeferred,
-  deleteDeferred,
+  loadDeferredForChat,
+  flushDeferredBatch,
   pruneDeferredDb,
   deleteDeferredByChat,
+  type DeferredWrite,
 } from "../db";
 import { log, debug } from "../lib/logger";
 import { logUnexpectedError } from "../lib/errors";
@@ -34,7 +37,13 @@ import { Job, ParsedJob, jobKey } from "../types";
 import { parseJobDescription, classifyBatch, quickTagJob } from "./llm";
 import { normalizeForDedup, runWorkerPool } from "../lib/utils";
 import { enrichJobs } from "./enrich";
-import { UserPollStats, getOrCreateStats, pruneInactiveStats, updatePollStats, clearPollStats } from "./stats";
+import {
+  UserPollStats,
+  ensureStats,
+  pruneInactiveStats,
+  updatePollStats,
+  clearPollStats,
+} from "./stats";
 
 export { RejectedJob, UserPollStats, getPollStats } from "./stats";
 
@@ -48,9 +57,19 @@ const MAX_NEW_PER_CYCLE = 100;
 const MAX_DEFER_CYCLES = 3;
 const DEFER_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
+const JOBS_LOG = path.join(process.cwd(), "logs", "jobs.jsonl");
+
+function logNewJobs(chatId: string, jobs: NewJob[]): void {
+  if (!config.debug || jobs.length === 0) return;
+  const dir = path.dirname(JOBS_LOG);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const ts = new Date().toISOString();
+  const lines = jobs.map((nj) => JSON.stringify({ ...nj.job, chatId, ts }));
+  fs.appendFileSync(JOBS_LOG, lines.join("\n") + "\n");
+}
+
 const lastPolledAt = new Map<string, number>();
 
-/** Clear in-memory state for a user (after account deletion). */
 export function clearUserState(chatId: string): void {
   lastPolledAt.delete(chatId);
   clearPollStats(chatId);
@@ -95,23 +114,25 @@ function collectNewJobs(
   chatId: string,
   ctx: ScoringContext,
 ): NewJob[] {
+  // batch-load seen state once instead of N+1 per-job DB queries
+  const seenKeys = loadSeenKeys(chatId);
+  const seenTitles = loadSeenTitles(chatId);
   const newJobs: NewJob[] = [];
   const cycleTitles = new Set<string>();
 
   for (const [sourceName, sourceJobs] of jobsBySource) {
-    if (settings.enabledSources.length > 0 && !settings.enabledSources.includes(sourceName)) continue;
+    if (settings.enabledSources.length > 0 && !settings.enabledSources.includes(sourceName))
+      continue;
     for (const original of filterJobs(sourceJobs, settings, ctx)) {
       if (!original.title.trim()) continue;
       const key = jobKey(original);
-      if (isSeen(chatId, key)) continue;
+      if (seenKeys.has(key)) continue;
 
       const normKey = normalizeForDedup(original.title, original.company || "unknown");
-      // Within same cycle: dedup by title only (catches same job from different sources)
-      const titleOnly = normKey.split("::")[0]!;
-      if (cycleTitles.has(titleOnly)) continue;
-      // Cross-cycle: dedup by title+company (allows same title at different companies)
-      if (isTitleSeen(chatId, normKey)) continue;
-      cycleTitles.add(titleOnly);
+      // within same cycle and cross-cycle dedup by title + company
+      if (cycleTitles.has(normKey)) continue;
+      if (seenTitles.has(normKey)) continue;
+      cycleTitles.add(normKey);
 
       newJobs.push({ job: { ...original }, key, normKey });
     }
@@ -146,18 +167,16 @@ async function parseJobs(
   debug(`Parsing ${prioritized.length} jobs for LLM (budget: ${maxParses})`);
   const parsedMap = new Map<string, ParsedJob | null>();
 
-  // Phase 1: full parses - fall back to quick-tag if heavy model fails
   const fullParseJobs = prioritized.slice(0, maxParses);
   await runWorkerPool(
     fullParseJobs,
     async ({ job, key }) => {
-      const result = await parseJobDescription(key, job.description ?? "");
-      parsedMap.set(key, result ?? (await quickTagJob(key, job.description ?? "")));
+      const fullParse = await parseJobDescription(key, job.description ?? "");
+      parsedMap.set(key, fullParse ?? (await quickTagJob(key, job.description ?? "")));
     },
     PARSE_CONCURRENCY,
   );
 
-  // Phase 2: quick-tags for overflow jobs beyond the heavy-parse budget
   const quickTagJobs = prioritized.slice(maxParses);
   if (quickTagJobs.length > 0) {
     await runWorkerPool(
@@ -189,12 +208,12 @@ function classifyByRelevance(
 
   for (const entry of newJobs) {
     const parsed = parsedMap.get(entry.key) ?? null;
-    const result = scoreJob(entry.job, parsed, ctx);
-    scores.set(entry.key, result.score);
-    signalsMap.set(entry.key, result.signals);
-    const pass = result.score >= computeThreshold(ctx);
+    const { score, normalized, signals } = scoreJob(entry.job, parsed, ctx);
+    scores.set(entry.key, score);
+    signalsMap.set(entry.key, signals);
+    const pass = score >= computeThreshold(ctx);
     debug(
-      `score ${result.score} (${result.normalized}%) ${pass ? "PASS" : "FAIL"} "${entry.job.title}" [${result.signals.join(", ")}]`,
+      `score ${score} (${normalized}%) ${pass ? "PASS" : "FAIL"} "${entry.job.title}" [${signals.join(", ")}]`,
     );
     (pass ? relevant : irrelevant).push(entry);
   }
@@ -222,35 +241,39 @@ function classifyByRelevance(
   return { relevant: capped, irrelevant, companyCapped, signalsMap };
 }
 
-/** Separate rejects into final (mark seen) vs deferred (retry next cycle). */
 function classifyIrrelevant(
   chatId: string,
   irrelevant: NewJob[],
   parsedMap: Map<string, ParsedJob | null>,
 ): { markSeen: NewJob[]; deferredTotal: number } {
+  const deferredMap = loadDeferredForChat(chatId);
   const ready: NewJob[] = [];
+  const writes: DeferredWrite[] = [];
+  const now = Date.now();
+
   for (const nj of irrelevant) {
     const wasParsed = parsedMap.get(nj.key) != null;
 
     if (wasParsed) {
       ready.push(nj);
-      deleteDeferred(chatId, nj.key);
+      if (deferredMap.has(nj.key)) writes.push({ type: "delete", jobKey: nj.key });
       continue;
     }
 
-    const prev = getDeferredCycles(chatId, nj.key);
-    const cycles = (prev ?? 0) + 1;
+    const prev = deferredMap.get(nj.key) ?? 0;
+    const cycles = prev + 1;
     if (cycles >= MAX_DEFER_CYCLES) {
       ready.push(nj);
-      deleteDeferred(chatId, nj.key);
+      writes.push({ type: "delete", jobKey: nj.key });
     } else {
-      upsertDeferred(chatId, nj.key, cycles, Date.now());
+      writes.push({ type: "upsert", jobKey: nj.key, cycles, updatedAt: now });
     }
   }
+
+  if (writes.length > 0) flushDeferredBatch(chatId, writes);
   return { markSeen: ready, deferredTotal: irrelevant.length - ready.length };
 }
 
-/** Send each job as a separate message. */
 async function deliverIndividually(
   chatId: string,
   jobs: NewJob[],
@@ -291,7 +314,6 @@ async function deliverJobs(
   return newJobs.filter((nj) => sentKeys.has(nj.key));
 }
 
-/** User profile summary for LLM classify prompt. */
 function buildUserProfile(settings: UserSettings): string {
   const sanitize = (s: string) =>
     s
@@ -314,7 +336,6 @@ function buildUserProfile(settings: UserSettings): string {
   return profile;
 }
 
-/** LLM pre-filter: marks all seen if nothing passes. */
 async function preFilterByLLM(
   chatId: string,
   allNew: NewJob[],
@@ -346,17 +367,17 @@ async function preFilterByLLM(
   return { candidates, preFilteredJobs };
 }
 
-/** Mark processed jobs as seen, bump counters. */
 function finalizeSeenState(
   chatId: string,
   stats: UserPollStats,
   delivered: NewJob[],
   markSeen: NewJob[],
-  companyCapped: NewJob[],
   preFilteredJobs: NewJob[],
   irrelevantCount: number,
 ): void {
-  const processedJobs = [...markSeen, ...companyCapped, ...preFilteredJobs, ...delivered];
+  // companyCapped jobs are intentionally NOT marked seen they remain unseen
+  // so they can be delivered in future cycles when the per-company quota resets
+  const processedJobs = [...markSeen, ...preFilteredJobs, ...delivered];
   markSeenBatch(
     chatId,
     processedJobs.map((nj) => nj.key),
@@ -373,10 +394,6 @@ function finalizeSeenState(
   log(`[${chatId}] Sent ${delivered.length} job(s), ${irrelevantCount} irrelevant.`);
 }
 
-/**
- * Full pipeline for one user:
- *  collect → LLM pre-filter → parse → score → enrich → deliver → mark seen
- */
 async function processForUser(
   settings: UserSettings,
   jobsBySource: Map<string, Job[]>,
@@ -389,10 +406,11 @@ async function processForUser(
 
   const chatId = settings.chatId;
   const firstRun = isFirstRun(chatId);
-  const stats = getOrCreateStats(chatId);
+  const stats = ensureStats(chatId);
   const ctx = buildScoringContext(settings);
 
   let allNew = collectNewJobs(jobsBySource, settings, chatId, ctx);
+  logNewJobs(chatId, allNew);
   if (allNew.length === 0) {
     log(`[${chatId}] No new jobs.`);
     return;
@@ -443,7 +461,7 @@ async function processForUser(
     if (relevant.length === 0) {
       markSeenBatch(
         chatId,
-        [...markSeen, ...companyCapped, ...preFilteredJobs].map((nj) => nj.key),
+        [...markSeen, ...preFilteredJobs].map((nj) => nj.key),
       );
       log(`[${chatId}] No relevant jobs (${candidates.length} filtered out).`);
       finalized = true;
@@ -452,15 +470,7 @@ async function processForUser(
 
     await enrichJobs(relevant);
     const delivered = await deliverJobs(chatId, relevant, parsedMap, signalsMap, firstRun);
-    finalizeSeenState(
-      chatId,
-      stats,
-      delivered,
-      markSeen,
-      companyCapped,
-      preFilteredJobs,
-      irrelevant.length,
-    );
+    finalizeSeenState(chatId, stats, delivered, markSeen, preFilteredJobs, irrelevant.length);
     finalized = true;
   } finally {
     // Safety net: if interrupted (timeout, error) before finalization,
@@ -479,14 +489,15 @@ async function processForUser(
 
 let polling = false;
 
-/** True while a poll cycle is running. */
 export function isPolling(): boolean {
   return polling;
 }
 
-/** Run a poll cycle for all due users. Skips if already polling (overlap guard). */
 export async function pollAllUsers(): Promise<void> {
-  if (polling) return;
+  if (polling) {
+    log("Poll skipped (previous cycle still running).");
+    return;
+  }
   polling = true;
 
   try {
@@ -555,7 +566,6 @@ export async function pollAllUsers(): Promise<void> {
   }
 }
 
-/** Run a one-off poll for a single user (e.g. right after onboarding). */
 export async function pollSingleUser(settings: UserSettings): Promise<void> {
   if (polling) {
     log(`[${settings.chatId}] Skipped single poll (cycle in progress).`);

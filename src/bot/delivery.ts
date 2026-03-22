@@ -71,14 +71,6 @@ async function sendWithRetry(label: string, fn: () => Promise<unknown>): Promise
   return false;
 }
 
-/**
- * Send a single job message with a "View job posting" button
- *
- * @param chatId - Telegram chat to send to
- * @param job - The job listing to format and send
- * @param parsed - LLM parse result; enriches the message with structured requirements/tags
- * @returns true if Telegram accepted the message
- */
 export async function sendJob(
   chatId: string,
   job: Job,
@@ -94,8 +86,6 @@ export async function sendJob(
     }),
   );
 }
-
-const BUTTONS_PER_ROW = 5;
 
 interface DigestPage {
   text: string;
@@ -131,7 +121,6 @@ function buildDigestPage(
     flatButtons.push({ text: String(globalIndex), callback_data: `job:${id}` });
   }
 
-  // Trim from the end until the message fits all three arrays stay in sync
   const renderText = () => (pageOffset === 0 ? formatDigest(items, totalJobs) : items.join("\n\n"));
   let text = renderText();
   while (items.length > 1 && text.length > DELIVERY.MAX_LENGTH) {
@@ -143,20 +132,12 @@ function buildDigestPage(
 
   return {
     text,
-    buttons: toRows(flatButtons, BUTTONS_PER_ROW),
+    buttons: toRows(flatButtons, 5),
     jobs: pageJobs.slice(0, items.length),
     entries,
   };
 }
 
-/**
- * Send jobs as a paginated digest. Returns only the jobs Telegram accepted
- *
- * @param chatId - Telegram chat to send to
- * @param jobs - Jobs to deliver, already sorted by relevance
- * @param parsedMap - LLM parse results keyed by jobKey, used for richer formatting
- * @param signalsMap - Scoring signals keyed by jobKey, shown as "why matched" hints
- */
 export async function sendJobs(
   chatId: string,
   jobs: Job[],

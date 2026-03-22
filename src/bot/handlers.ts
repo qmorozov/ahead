@@ -2,7 +2,7 @@ import { Composer } from "grammy";
 import type { Context } from "grammy";
 import { loadSettings, saveSettings } from "../db";
 import { parseCommaSeparated, parseCommaSeparatedRaw } from "../lib/utils";
-import { WIZARD } from "../constants";
+import { WIZARD, POLLING } from "../constants";
 import type { ToggleField } from "./presets";
 import { wizardSessions, renderWizardStep, setOnWizardComplete } from "./wizard";
 import { wizardCallbacks } from "./wizard";
@@ -29,7 +29,6 @@ handlers.on("message:text", async (ctx) => {
   const text = ctx.message.text;
   if (text.startsWith("/")) return;
 
-  // Steps that accept typed text and the session field they write to
   const TEXT_FIELDS: Record<string, ToggleField | "technologies"> = {
     roles: "roles",
     technologies: "technologies",
@@ -73,20 +72,24 @@ handlers.on("message:text", async (ctx) => {
   if (!pending) return;
   const s = loadSettings(chatId);
   if (!s) return;
-  ctx.deleteMessage().catch(() => {});
+  await ctx.deleteMessage().catch(() => {});
 
   if (pending.key === "checkIntervalMinutes" || pending.key === "maxJobAgeDays") {
     waitingForInput.delete(chatId);
     const num = parseInt(text.trim(), 10);
-    if (isNaN(num) || num < 0 || (pending.key === "checkIntervalMinutes" && num < 5)) {
+    if (
+      isNaN(num) ||
+      num < 0 ||
+      (pending.key === "checkIntervalMinutes" && num < POLLING.MIN_INTERVAL_MINUTES)
+    ) {
       await ctx.reply(
-        `Invalid number. ${pending.key === "checkIntervalMinutes" ? "Minimum is 5 minutes." : "Enter 0 or more."}`,
+        `Invalid number. ${pending.key === "checkIntervalMinutes" ? `Minimum is ${POLLING.MIN_INTERVAL_MINUTES} minutes.` : "Enter 0 or more."}`,
       );
       return;
     }
     s[pending.key] =
       pending.key === "checkIntervalMinutes"
-        ? Math.min(num, 1440)
+        ? Math.min(num, POLLING.MAX_INTERVAL_MINUTES)
         : Math.min(num, 30);
     saveSettings(s);
     showSettings(ctx, chatId, s, pending.messageId);

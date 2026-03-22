@@ -193,9 +193,14 @@ export const EXCLUDE_PRESETS = [
   "blockchain",
 ];
 
-export const ALL_SOURCE_NAMES = sources.map((s) => s.name);
+// when user selects an exclude preset, also add these paired terms
+export const EXCLUDE_EXPANSIONS: Readonly<Record<string, string[]>> = {
+  crypto: ["cryptocurrency"],
+  web3: ["web 3"],
+  gambling: ["betting", "casino", "igaming"],
+};
 
-export const PRIMARY_STACK_SIZE = 5;
+export const ALL_SOURCE_NAMES = sources.map((s) => s.name);
 
 export { JOB_TYPE_PRESETS };
 

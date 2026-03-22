@@ -1,8 +1,3 @@
-/**
- * Scoring weights for job relevance.
- * Units: points added to total score.
- * A job passes if its total score >= THRESHOLD (adjusted by computeThreshold).
- */
 export const SCORING = {
   THRESHOLD: 20, // points - base pass threshold, raised dynamically for complex profiles
   TITLE_KEYWORD: 25, // points - user keyword found in job title
@@ -19,11 +14,6 @@ export const SCORING = {
   ROLE_TECH_MAX: 10, // points - max bonus from role-domain tech matches in parsed tags
 } as const;
 
-/**
- * Score penalties. All values are negative.
- * Applied when a job has a disqualifying or undesirable trait.
- * Hard rejects (excluded tech, seniority mismatch, wrong role) return score -1 directly.
- */
 export const PENALTY = {
   NO_ROLE: -15, // points - job title doesn't match any known role
   OVERQUALIFIED: -20, // points - job level is 2+ above user's max
@@ -37,10 +27,6 @@ export const PENALTY = {
   RELOCATION: -15, // points - description requires relocation
 } as const;
 
-/**
- * Stack overlap thresholds for hard-reject and scoring.
- * Controls when a job's tech stack is too different from the user's.
- */
 export const STACK = {
   MIN_TAGS: 5, // count - minimum non-generic tags needed to evaluate overlap
   COVERAGE_THRESHOLD: 0.35, // ratio - job coverage below this + low recall = hard reject
@@ -51,52 +37,35 @@ export const STACK = {
   STRONG_RECALL: 0.5, // ratio - user recall above this = strong stack fit bonus
 } as const;
 
-/**
- * Freshness decay parameters.
- * Newer jobs get a small score bonus that decays exponentially.
- */
 export const FRESHNESS = {
   DECAY_HOURS: 48, // hours - half-life for freshness bonus decay
 } as const;
 
-/** Sources whose job listings come from curated company career pages. */
 export const HIGH_QUALITY_SOURCES = new Set(["Greenhouse", "Lever", "HN"]);
 
-/**
- * Polling cycle parameters.
- * Controls per-company caps, source caching, and company size heuristics.
- */
 export const POLLING = {
   MAX_PER_COMPANY: 3, // count - max jobs sent per company per cycle
   SOURCE_CACHE_TTL_MS: 2 * 60 * 1000, // ms - reuse fetched sources within this window
-  COMPANY_SIZE_MIN_JOBS: 10, // count — board job count threshold for "established" bonus
+  COMPANY_SIZE_MIN_JOBS: 10, // count - board job count threshold for "established" bonus
+  MIN_INTERVAL_MINUTES: 10, // min - minimum user polling interval
+  MAX_INTERVAL_MINUTES: 1440, // min - maximum user polling interval (24h)
 } as const;
 
-/**
- * LLM usage limits and configuration.
- * Shared across Groq and Cerebras providers.
- */
 export const LLM = {
-  PARSES_PER_HOUR: 300, // count — max full parses per hour across all users
-  QUOTA_COOLDOWN_MS: 60 * 60 * 1000, // ms — cooldown window for parse quota
-  MAX_INPUT_CHARS: 2000, // chars — max description length sent to LLM
-  CLASSIFY_BATCH_SIZE: 15, // count — jobs per LLM classify call
+  PARSES_PER_HOUR: 300, // count - max full parses per hour across all users
+  QUOTA_COOLDOWN_MS: 60 * 60 * 1000, // ms - cooldown window for parse quota
+  MAX_INPUT_CHARS: 2000, // chars - max description length sent to LLM
+  CLASSIFY_BATCH_SIZE: 15, // count - jobs per LLM classify call
 } as const;
 
-/**
- * Wizard (onboarding flow) timeouts and limits.
- */
 export const WIZARD = {
-  TTL_MS: 30 * 60 * 1000, // ms — wizard session expires after 30min of inactivity
-  INPUT_TTL_MS: 10 * 60 * 1000, // ms — free-text input prompt expires after 10min
-  MAX_ARRAY_ITEMS: 50, // count — max items in any user settings array
-  MAX_ITEM_LENGTH: 100, // chars — max length of a single settings item
+  TTL_MS: 30 * 60 * 1000, // ms - wizard session expires after 30min of inactivity
+  INPUT_TTL_MS: 10 * 60 * 1000, // ms - free-text input prompt expires after 10min
+  MAX_ARRAY_ITEMS: 50, // count - max items in any user settings array
+  MAX_ITEM_LENGTH: 100, // chars - max length of a single settings item
 } as const;
 
-/**
- * Job delivery (message formatting) parameters.
- */
 export const DELIVERY = {
-  PAGE_SIZE: 7, // count — max jobs per digest message
-  MAX_LENGTH: 4096, // chars — Telegram message length limit
+  PAGE_SIZE: 7, // count - max jobs per digest message
+  MAX_LENGTH: 4096, // chars - Telegram message length limit
 } as const;

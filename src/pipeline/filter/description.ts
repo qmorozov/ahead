@@ -10,14 +10,12 @@ export function getStrippedDescription(job: Job): string {
   const key = makeJobKey(job);
   const cached = strippedDescCache.get(key);
   if (cached !== undefined) {
-    // Move to end of Map for LRU ordering
     strippedDescCache.delete(key);
     strippedDescCache.set(key, cached);
     return cached;
   }
   const text = job.description ? stripHtml(job.description).slice(0, LLM.MAX_INPUT_CHARS) : "";
   if (strippedDescCache.size >= MAX_DESC_CACHE) {
-    // Evict single oldest (LRU = first key in Map)
     strippedDescCache.delete(strippedDescCache.keys().next().value!);
   }
   strippedDescCache.set(key, text);

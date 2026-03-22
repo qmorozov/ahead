@@ -20,13 +20,13 @@ const JobSchema = z.object({
 
 const ResponseSchema = z.array(JobSchema).default([]);
 
-/** Fetch jobs from tracked Lever ATS boards. */
 export const fetchLever = createATSBoardFetcher({
   platform: "lever",
   label: "Lever",
-  batchSize: 40,
+  batchSize: 50,
   boardsPerCycle: 1500,
   accept429: true,
+  timeoutMs: 10_000,
   buildUrl: (slug) => `https://api.lever.co/v0/postings/${slug}`,
   parseJobs(data: unknown, slug: string): Job[] {
     const jobs = ResponseSchema.parse(data);

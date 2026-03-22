@@ -23,8 +23,8 @@ const sql = {
   `),
   count: db.prepare(`SELECT COUNT(*) as cnt FROM boards WHERE platform = ?`),
   active: db.prepare(`SELECT slug FROM boards WHERE platform = ? AND active = 1`),
-  // Adaptive staleness: boards with consecutive 304s are checked less often.
-  // Base interval * 2^min(n, 4) gives: 1h, 2h, 4h, 8h, 16h
+  // Adaptive staleness: boards with consecutive 304s are checked less often
+  // base interval * 2^min(n, 4) gives: 1h, 2h, 4h, 8h, 16h
   stale: db.prepare(`
     SELECT slug FROM boards WHERE platform = ? AND active = 1
       AND (last_checked IS NULL
@@ -46,10 +46,6 @@ const upsertBatch = db.transaction(
   },
 );
 
-/**
- * Seed board slugs for a platform. If already seeded, reactivates any disabled boards.
- * Idempotent: safe to call on every startup.
- */
 export function seedBoards(boardSlugs: string[], platform: string): void {
   const existing = CountRowSchema.parse(sql.count.get(platform)).cnt;
   if (existing >= boardSlugs.length) {
@@ -63,7 +59,6 @@ export function getActiveSlugs(platform: string): string[] {
   return slugs(sql.active.all(platform));
 }
 
-/** Return active slugs that haven't been checked recently (adaptive back-off for 304s). */
 export function getStaleSlugs(platform: string, maxAgeSeconds: number): string[] {
   return slugs(sql.stale.all(platform, maxAgeSeconds));
 }
@@ -87,7 +82,6 @@ export function setEtag(slug: string, platform: string, etag: string | null): vo
   sql.setEtag.run(etag, slug, platform);
 }
 
-/** Bump the consecutive-304 counter (used to back off stale board polling). */
 export function increment304(slug: string, platform: string): void {
   sql.increment304.run(slug, platform);
 }

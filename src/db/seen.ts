@@ -6,8 +6,6 @@ const THIRTY_DAYS_S = 2_592_000;
 const JobKeyRowSchema = z.object({ job_key: z.string() });
 const NormKeyRowSchema = z.object({ norm_key: z.string() });
 
-// seen_jobs - per-user dedup by job key
-
 const jobsSql = {
   isSeen: db.prepare(`SELECT 1 FROM seen_jobs WHERE chat_id = ? AND job_key = ?`),
   mark: db.prepare(`INSERT OR IGNORE INTO seen_jobs (chat_id, job_key) VALUES (?, ?)`),
@@ -35,12 +33,10 @@ export const markSeenBatch = db.transaction((chatId: string, keys: string[]) => 
   for (const key of keys) jobsSql.mark.run(chatId, key);
 });
 
-/** True if the chat has never received any jobs (no seen_jobs rows). */
 export function isFirstRun(chatId: string): boolean {
   return jobsSql.hasAny.get(chatId) === undefined;
 }
 
-/** Delete seen_jobs entries older than 30 days for a given chat. */
 export function pruneSeen(chatId: string): void {
   jobsSql.prune.run(chatId);
 }
@@ -58,7 +54,6 @@ const titlesSql = {
   prune: db.prepare(`DELETE FROM seen_titles WHERE seen_at < unixepoch() - ${THIRTY_DAYS_S}`),
 };
 
-/** Check whether a normalised title+company key was seen within the last 30 days. */
 export function isTitleSeen(chatId: string, normKey: string): boolean {
   return titlesSql.isSeen.get(chatId, normKey) !== undefined;
 }
@@ -80,7 +75,6 @@ export const markTitleSeenBatch = db.transaction((chatId: string, normKeys: stri
   for (const nk of normKeys) titlesSql.mark.run(chatId, nk);
 });
 
-/** Delete all seen_titles entries older than 30 days (global, not per-chat). */
 export function pruneSeenTitles(): void {
   titlesSql.prune.run();
 }

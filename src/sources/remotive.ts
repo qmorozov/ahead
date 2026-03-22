@@ -22,7 +22,9 @@ const ResponseSchema = z.object({
 });
 
 export async function fetchRemotive(): Promise<Job[]> {
-  const { data } = await axios.get("https://remotive.com/api/remote-jobs", { timeout: HTTP_TIMEOUT });
+  const { data } = await axios.get("https://remotive.com/api/remote-jobs", {
+    timeout: HTTP_TIMEOUT,
+  });
   const { jobs } = ResponseSchema.parse(data);
 
   return jobs.map((j) => ({

@@ -25,7 +25,9 @@ const ResponseSchema = z.object({
 });
 
 export async function fetchArbeitnow(): Promise<Job[]> {
-  const { data } = await axios.get("https://arbeitnow.com/api/job-board-api", { timeout: HTTP_TIMEOUT });
+  const { data } = await axios.get("https://arbeitnow.com/api/job-board-api", {
+    timeout: HTTP_TIMEOUT,
+  });
   const { data: jobs } = ResponseSchema.parse(data);
 
   return jobs.map((j) => ({

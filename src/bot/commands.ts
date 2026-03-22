@@ -42,13 +42,13 @@ function formatActivity(s: UserSettings | null, stats: ReturnType<typeof getPoll
     .slice(-5)
     .map(
       (r) =>
-        `\u2022 <a href="${escapeHtml(r.url)}">${escapeHtml(truncate(r.title, MAX_TITLE_LEN))}</a> \u2014 ${escapeHtml(r.reason)}`,
+        `\u2022 <a href="${escapeHtml(r.url)}">${escapeHtml(truncate(r.title, MAX_TITLE_LEN))}</a> - ${escapeHtml(r.reason)}`,
     );
 
   let hint = "";
   if (stats.checked > 0 && stats.sent === 0) {
     hint =
-      "\ud83d\udca1 No matches found. Try broadening your filters \u2014 add more technologies or lower the salary threshold.";
+      "\ud83d\udca1 No matches found. Try broadening your filters - add more technologies or lower the salary threshold.";
   } else if (stats.checked > 50 && stats.sent > 0 && stats.sent <= 2) {
     hint =
       "\ud83d\udca1 Few matches. You might get more by adding technologies or relaxing seniority level.";
@@ -89,14 +89,14 @@ async function replySources(ctx: Context): Promise<void> {
   for (const source of sources) {
     const h = healthMap.get(source.name);
     if (!h) {
-      lines.push(`\u2753 ${source.name}  \u2014  no data yet`);
+      lines.push(`\u2753 ${source.name}  -  no data yet`);
       continue;
     }
     const ago = h.last_success_at ? formatAgo(now - h.last_success_at) : "never";
     const icon = h.fail_streak > 0 ? "\u26a0\ufe0f" : "\u2705";
     const suffix =
       h.fail_streak > 0 ? ` (${h.fail_streak >= 3 ? "streak" : "fail"}: ${h.fail_streak})` : "";
-    lines.push(`${icon} ${source.name}  \u2014  ${h.last_job_count ?? 0} jobs  ${ago}${suffix}`);
+    lines.push(`${icon} ${source.name}  -  ${h.last_job_count ?? 0} jobs  ${ago}${suffix}`);
   }
 
   await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });

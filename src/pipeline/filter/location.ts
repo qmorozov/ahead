@@ -125,7 +125,6 @@ const LOCATION_SYNONYMS: Record<string, string[]> = {
   ],
 };
 
-/** Expand user locations with known synonyms (e.g. "Europe" -> "EU", "Germany", "France",  */
 export function expandLocations(locations: string[]): string[] {
   const expanded = new Set(locations);
   for (const loc of locations) {

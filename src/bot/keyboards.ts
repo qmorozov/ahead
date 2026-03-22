@@ -1,6 +1,5 @@
 import { InlineKeyboard, Keyboard } from "grammy";
 
-/** Split a flat array into chunks of size. */
 export function toRows<T>(flat: T[], size: number): T[][] {
   const rows: T[][] = [];
   for (let i = 0; i < flat.length; i += size) {
@@ -9,15 +8,6 @@ export function toRows<T>(flat: T[], size: number): T[][] {
   return rows;
 }
 
-/**
- * Build an inline keyboard grid where each preset is a toggle button
- *
- * @param presets - Labels to show as buttons
- * @param selected - Currently selected values (shown with a checkmark)
- * @param callbackPrefix - Prefix for callback data
- * @param perRow - number of buttons per row
- * @param caseSensitive - Whether selection matching is case-sensitive (default true)
- */
 export function toggleGrid(
   presets: string[],
   selected: Set<string> | string[],

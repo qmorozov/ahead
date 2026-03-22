@@ -7,17 +7,15 @@ import {
 } from "../../lib/tech-data";
 import { testKeyword } from "./matching";
 
-/** Strip dots, dashes, spaces, slashes and lowercase: "Node.js" → "nodejs". */
 export function normalizeTag(tag: string): string {
   return tag.toLowerCase().replace(/[.\-\s/]/g, "");
 }
 
 function resolveCanonical(kw: string): { canonical: string; synonyms: string[] } | null {
   const normalized = normalizeTag(kw);
-  // Direct canonical hit (kw is already a canonical name)
   const directSyns = CANONICAL_TO_SYNONYMS.get(normalized);
   if (directSyns) return { canonical: normalized, synonyms: directSyns };
-  // Synonym hit (kw is an alias for a canonical name)
+
   const canonical =
     SYNONYM_TO_CANONICAL.get(normalized) ?? SYNONYM_TO_CANONICAL.get(kw.toLowerCase());
   if (canonical) {
@@ -41,7 +39,6 @@ export function expandWithAliases(keywords: string[]): string[] {
   return [...expanded];
 }
 
-/** Build a Set of all normalized forms for matching (canonical + synonyms + implies). */
 export function buildTagSet(keywords: string[]): Set<string> {
   const set = new Set<string>();
   for (const kw of keywords) {
@@ -60,8 +57,6 @@ export function buildTagSet(keywords: string[]): Set<string> {
 // Ambiguous short words that match common English
 const AMBIGUOUS_TECHS = new Set(["go", "c", "r", "d", "v", "s"]);
 
-// Index: single-word techs looked up via Set (O(words) not O(techs)).
-// Multi-word techs (e.g. "rest api", "ci/cd") checked via includes() fallback.
 const SINGLE_WORD_TECHS = new Set<string>();
 const MULTI_WORD_TECHS: Array<[string, string]> = [];
 for (const tech of ALL_KNOWN_TECHS) {
@@ -73,7 +68,6 @@ for (const tech of ALL_KNOWN_TECHS) {
   }
 }
 
-// Split title into candidate tokens for Set lookup
 function extractTokens(lower: string): string[] {
   return lower.split(/[\s,|·•–—/()[\]{}]+/).filter(Boolean);
 }
@@ -89,12 +83,10 @@ export function inferTagsFromTitle(title: string): string[] {
     if (domains) for (const d of domains) tags.add(d);
   }
 
-  // O(tokens): lookup each word in the single-word index
   for (const token of extractTokens(lower)) {
     if (SINGLE_WORD_TECHS.has(token) && testKeyword(title, token)) addTech(token);
   }
 
-  // O(multi-word techs ~30): substring check + regex confirm for multi-word entries
   for (const [tech, techLower] of MULTI_WORD_TECHS) {
     if (!lower.includes(techLower)) continue;
     if (!testKeyword(title, tech)) continue;
@@ -150,5 +142,4 @@ const GENERIC_TOOLS_RAW = [
   "elk stack",
 ];
 
-/** Tools common enough that they don't differentiate stacks (git, docker, sql, etc.). */
 export const GENERIC_TOOLS = new Set(GENERIC_TOOLS_RAW.flatMap((t) => [t, normalizeTag(t)]));

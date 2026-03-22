@@ -3,7 +3,6 @@ import { Job } from "../types";
 
 const FEED_URL = "https://remotefirstjobs.com/remote-jobs.rss";
 
-/** Fetch remote jobs from the RemoteFirstJobs RSS feed. */
 export async function fetchRemoteFirstJobs(): Promise<Job[]> {
   const feed = await rssParser.parseURL(FEED_URL);
   const jobs: Job[] = [];

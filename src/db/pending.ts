@@ -57,10 +57,6 @@ export function deletePendingByChatId(chatId: string): void {
   sql.deleteByChatId.run(chatId);
 }
 
-/**
- * Load all pending jobs from the database.
- * Validates job JSON through Zod - corrupted rows are skipped with a warning.
- */
 export function loadAllPendingJobs(): PendingJobEntry[] {
   const result: PendingJobEntry[] = [];
   for (const raw of sql.loadAll.all()) {

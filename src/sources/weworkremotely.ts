@@ -3,7 +3,6 @@ import { Job } from "../types";
 
 const FEED_URL = "https://weworkremotely.com/remote-jobs.rss";
 
-/** Fetch remote jobs from the WeWorkRemotely RSS feed. */
 export async function fetchWeWorkRemotely(): Promise<Job[]> {
   const feed = await rssParser.parseURL(FEED_URL);
   const jobs: Job[] = [];
@@ -16,7 +15,9 @@ export async function fetchWeWorkRemotely(): Promise<Job[]> {
     const fullTitle = item.title ?? "";
     const colon = fullTitle.indexOf(":");
     const [company, title] =
-      colon > 0 ? [fullTitle.substring(0, colon).trim(), fullTitle.substring(colon + 1).trim()] : ["", fullTitle];
+      colon > 0
+        ? [fullTitle.substring(0, colon).trim(), fullTitle.substring(colon + 1).trim()]
+        : ["", fullTitle];
 
     jobs.push({
       id: item.guid ?? item.link ?? "",

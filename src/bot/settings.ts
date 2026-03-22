@@ -3,7 +3,7 @@ import type { Context } from "grammy";
 import { UserSettings, loadSettings, saveSettings } from "../db";
 import { formatSettings } from "./format";
 import { logError } from "../lib/logger";
-import { WIZARD } from "../constants";
+import { WIZARD, POLLING } from "../constants";
 import {
   ROLE_PRESETS,
   WIZARD_SENIORITY,
@@ -437,7 +437,10 @@ const CUSTOM_ROUTES: readonly CallbackRoute[] = [
   {
     prefix: "set:intv:",
     handle(raw, s, ctx, chatId, msgId) {
-      const value = Math.max(5, Math.min(1440, parseInt(raw, 10) || 30));
+      const value = Math.max(
+        POLLING.MIN_INTERVAL_MINUTES,
+        Math.min(POLLING.MAX_INTERVAL_MINUTES, parseInt(raw, 10) || 30),
+      );
       s.checkIntervalMinutes = value;
       saveSettings(s);
       fireIntervalChanged();
@@ -572,7 +575,6 @@ const EDITOR_MAP: Readonly<Record<string, EditorConfig>> = {
   },
 };
 
-// Falls back to showArrayEditor for keys without an EDITOR_MAP entry
 export function showEditorForKey(
   ctx: Context,
   chatId: string,
@@ -620,7 +622,6 @@ settingsCallbacks.callbackQuery(/^set:/, async (ctx) => {
     return;
   }
 
-  // match prefix -> load settings -> call handler -> answer callback
   for (const route of ALL_ROUTES) {
     if (!data.startsWith(route.prefix)) continue;
     const value = data.slice(route.prefix.length);
@@ -631,7 +632,6 @@ settingsCallbacks.callbackQuery(/^set:/, async (ctx) => {
     return;
   }
 
-  // Open editor "set:roles" -> show the roles editor
   const raw = data.slice(4);
   if (!(raw in LABELS)) return;
   const key = raw as SettingKey;

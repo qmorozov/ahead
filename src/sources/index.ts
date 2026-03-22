@@ -1,9 +1,3 @@
-/**
- * Error strategy:
- * - Operational errors (timeout, 429, DNS) → retry with backoff, serve stale data, disable source temporarily
- * - Persistent failures (3+ consecutive) → disable source for 30min, serve stale if <1h old
- * - Degraded state (source down) → other sources continue, users still get results
- */
 import pRetry from "p-retry";
 import { AxiosError } from "axios";
 import { Job } from "../types";
@@ -25,17 +19,11 @@ import { fetchAdzuna } from "./adzuna";
 import { fetchGreenhouse } from "./greenhouse";
 import { fetchLever } from "./lever";
 
-/**
- * A job source that can be fetched for listings.
- * - `fetch` returns normalized `Job[]` on success, throws on failure.
- * - Retries, staleness, and disabling are handled by `fetchWithRetry`.
- */
 export interface JobSource {
   readonly name: string;
   fetch(): Promise<Job[]>;
 }
 
-/** Registry of all available job sources. */
 export const sources: readonly JobSource[] = [
   { name: "RemoteOK", fetch: fetchRemoteOK },
   { name: "Remotive", fetch: fetchRemotive },
@@ -80,10 +68,6 @@ function isTransientError(error: unknown): boolean {
   return false;
 }
 
-/**
- * Fetch jobs from a source with retries, stale-data fallback, and auto-disable on repeated failure.
- * Returns an empty array if the source is disabled or all retries are exhausted.
- */
 export async function fetchWithRetry(source: JobSource): Promise<Job[]> {
   if (isSourceDisabled(source.name)) return [];
 
@@ -115,7 +99,6 @@ export async function fetchWithRetry(source: JobSource): Promise<Job[]> {
     const disableMs = isMinor ? DISABLE_TRANSIENT_MS : DISABLE_PERMANENT_MS;
     disabledUntil.set(source.name, Date.now() + disableMs);
 
-    // Serve stale results if available and fresh enough
     const stale = lastGoodResults.get(source.name);
     if (stale && Date.now() - stale.fetchedAt < STALE_TTL_MS) {
       log(`${source.name} failed, serving ${stale.jobs.length} stale jobs (failure #${failures})`);

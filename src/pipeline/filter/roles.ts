@@ -67,7 +67,6 @@ export const ROLE_CONFIGS: Record<string, RoleConfig> = {
   },
 };
 
-/** Get search terms for the given roles (e.g. "frontend" → ["frontend", "front-end", "UI developer"]). */
 export function getRoleTerms(roles: string[]): string[] {
   return roles.flatMap((r) => ROLE_CONFIGS[r.toLowerCase()]?.searchTerms ?? [r.toLowerCase()]);
 }

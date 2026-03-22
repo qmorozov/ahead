@@ -10,12 +10,13 @@ import {
   markUserBlocked,
 } from "./db";
 import { handlers, setOnWizardComplete, setOnIntervalChanged } from "./bot/handlers";
+import { sweepStaleWizards } from "./bot/wizard";
+import { sweepStaleInputs } from "./bot/settings";
 import { log, logError } from "./lib/logger";
 import { pollAllUsers, pollSingleUser, isPolling } from "./pipeline/polling";
 import { initPendingJobs } from "./bot/delivery";
 import { sleep } from "./lib/utils";
-
-// ── Bot setup ──────────────────────────────────────────────────────────
+import { POLLING } from "./constants";
 
 bot.catch((err) => {
   const error = err.error;
@@ -48,24 +49,20 @@ setOnWizardComplete(async (chatId) => {
 
 setOnIntervalChanged(() => startCron());
 
-// ── Scheduling ─────────────────────────────────────────────────────────
-
 let cronTask: ScheduledTask | null = null;
 
-/**
- * (Re)start the cron job that triggers polling.
- * Schedule: every N minutes, where N = smallest user interval (min 5).
- */
 function startCron(): void {
   if (cronTask) cronTask.stop();
 
   const allSettings = loadAllSettings().filter((s) => isOnboarded(s));
   const interval =
     allSettings.length > 0
-      ? Math.max(5, Math.min(...allSettings.map((s) => s.checkIntervalMinutes)))
+      ? Math.max(
+          POLLING.MIN_INTERVAL_MINUTES,
+          Math.min(...allSettings.map((s) => s.checkIntervalMinutes)),
+        )
       : 30;
 
-  // e.g. "*/15 * * * *" = every 15 minutes
   cronTask = cron.schedule(`*/${interval} * * * *`, () => {
     pollAllUsers().catch((error) => logError("Poll cycle", error));
   });
@@ -73,7 +70,6 @@ function startCron(): void {
   log(`Cron tick: every ${interval}min (per-user intervals apply).`);
 }
 
-// "0 * * * *" = at minute 0 of every hour - truncate the WAL file
 const walCron = cron.schedule("0 * * * *", () => {
   try {
     checkpointWal();
@@ -82,7 +78,10 @@ const walCron = cron.schedule("0 * * * *", () => {
   }
 });
 
-// ── Startup ────────────────────────────────────────────────────────────
+const sweepCron = cron.schedule("*/5 * * * *", () => {
+  sweepStaleWizards();
+  sweepStaleInputs();
+});
 
 bot.api
   .setMyCommands([
@@ -110,10 +109,7 @@ if (onboarded.length > 0) {
   log("No users yet. Waiting for /start in Telegram...");
 }
 
-// ── Shutdown ───────────────────────────────────────────────────────────
-
 let shuttingDown = false;
-const SHUTDOWN_TIMEOUT_MS = 10_000;
 
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
@@ -122,8 +118,9 @@ async function shutdown(signal: string): Promise<void> {
 
   cronTask?.stop();
   walCron.stop();
+  sweepCron.stop();
 
-  const deadline = Date.now() + SHUTDOWN_TIMEOUT_MS;
+  const deadline = Date.now() + 10_000;
   while (isPolling() && Date.now() < deadline) await sleep(200);
   if (isPolling()) log("Shutdown deadline reached, forcing exit.");
 

@@ -26,7 +26,8 @@ export async function fetchRemoteOK(): Promise<Job[]> {
   const raw = z.array(z.unknown()).parse(data);
   const jobs: Job[] = [];
 
-  for (const item of raw.slice(1)) { // first element is API metadata, not a job
+  for (const item of raw.slice(1)) {
+    // first element is API metadata, not a job
     const result = JobSchema.safeParse(item);
     if (!result.success) continue;
     const j = result.data;

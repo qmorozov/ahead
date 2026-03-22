@@ -6,7 +6,14 @@ import { createATSBoardFetcher } from "./ats-board";
 const JobSchema = z.object({
   id: z.number().transform(String),
   title: z.string().default(""),
-  location: z.object({ name: z.string().nullish().transform((v) => v ?? "") }).default({ name: "" }),
+  location: z
+    .object({
+      name: z
+        .string()
+        .nullish()
+        .transform((v) => v ?? ""),
+    })
+    .default({ name: "" }),
   absolute_url: z.string().default(""),
   updated_at: z.string().default(""),
   first_published: z.string().nullish(),
@@ -17,7 +24,6 @@ const ResponseSchema = z.object({
   jobs: z.array(JobSchema).default([]),
 });
 
-/** Fetch jobs from tracked Greenhouse ATS boards. */
 export const fetchGreenhouse = createATSBoardFetcher({
   platform: "greenhouse",
   label: "Greenhouse",

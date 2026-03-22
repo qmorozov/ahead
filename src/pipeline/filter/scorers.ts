@@ -2,7 +2,7 @@ import { franc } from "franc-min";
 import { SENIORITY_ORDER } from "../../lib/seniority";
 import { extractSalaryUsd } from "../../lib/salary";
 import { SCORING, PENALTY, STACK, FRESHNESS, POLLING, HIGH_QUALITY_SOURCES } from "../../constants";
-import { CANONICAL_TO_DOMAINS } from "../../lib/tech-data";
+import { CANONICAL_TO_DOMAINS, ALL_KNOWN_TECHS } from "../../lib/tech-data";
 import { testKeyword, matchesAny, normalizeTag, GENERIC_TOOLS } from "./matching";
 import { ROLE_CONFIGS, GENERIC_DEV_PATTERN } from "./roles";
 import { matchesSeniority, seniorityDetected } from "./seniority";
@@ -10,10 +10,33 @@ import type { ScorerInput, ScorerResult } from "./index";
 
 // franc returns ISO 639-3 codes; map user-facing language names to those codes
 const LANG_TO_FRANC: Readonly<Record<string, string>> = {
-  english: "eng", chinese: "cmn", spanish: "spa", german: "deu", french: "fra",
-  portuguese: "por", japanese: "jpn", korean: "kor", dutch: "nld", italian: "ita",
-  polish: "pol", russian: "rus", ukrainian: "ukr", turkish: "tur", arabic: "arb",
+  english: "eng",
+  chinese: "cmn",
+  spanish: "spa",
+  german: "deu",
+  french: "fra",
+  portuguese: "por",
+  japanese: "jpn",
+  korean: "kor",
+  dutch: "nld",
+  italian: "ita",
+  polish: "pol",
+  russian: "rus",
+  ukrainian: "ukr",
+  turkish: "tur",
+  arabic: "arb",
 };
+
+// tech-heavy text has no useful language signal for franc
+function isTechHeavy(text: string): boolean {
+  const words = text
+    .toLowerCase()
+    .split(/[\s,|·•–—/()[\]{}]+/)
+    .filter(Boolean);
+  if (words.length === 0) return false;
+  const techWords = words.filter((w) => ALL_KNOWN_TECHS.has(w) || GENERIC_TOOLS.has(w));
+  return techWords.length / words.length > 0.6;
+}
 
 const STAFFING_AGENCY_RE =
   /\b(confidential|staffing|recruiting|recruitment|talent\s*(solution|acquisition|partner)|manpower|hays|robert\s*half|adecco|randstad|modis|kforce|tek\s*systems|insight\s*global)\b/i;
@@ -162,10 +185,6 @@ export function scoreStackMatch({ job, ctx, analysis }: ScorerInput): ScorerResu
   return { score: 0, signals: [] };
 }
 
-/**
- * Expand user roles with related roles (fullstack ↔ frontend+backend).
- * Returns the expanded set and the original set for distinguishing direct vs. implied matches.
- */
 function expandRoles(roles: string[]): { expanded: Set<string>; original: Set<string> } {
   const original = new Set(roles.map((r) => r.toLowerCase()));
   const expanded = new Set(original);
@@ -177,7 +196,6 @@ function expandRoles(roles: string[]): { expanded: Set<string>; original: Set<st
   return { expanded, original };
 }
 
-/** Match job title against user roles; returns score/signal or null if no title match found. */
 function matchTitleRole(
   title: string,
   expanded: Set<string>,
@@ -195,7 +213,6 @@ function matchTitleRole(
   return null;
 }
 
-/** Check if the title matches a role the user did NOT select → hard reject. */
 function detectWrongRole(title: string, userRoles: Set<string>): ScorerResult | null {
   for (const [role, config] of Object.entries(ROLE_CONFIGS)) {
     if (!userRoles.has(role) && config.titlePattern.test(title)) {
@@ -213,7 +230,6 @@ export function scoreRole({ job, ctx, analysis }: ScorerInput): ScorerResult {
   const signals: string[] = [];
   let roleMatched = false;
 
-  // Phase 1: direct title match against user's roles (including expanded)
   const titleMatch = matchTitleRole(job.title, expanded, original);
   if (titleMatch) {
     score += titleMatch.score;
@@ -221,7 +237,6 @@ export function scoreRole({ job, ctx, analysis }: ScorerInput): ScorerResult {
     roleMatched = true;
   }
 
-  // Phase 2: fallback - generic "Software Engineer" title, or hard-reject for wrong role
   if (!roleMatched) {
     if (GENERIC_DEV_PATTERN.test(job.title)) {
       score += Math.round(SCORING.ROLE_MATCH / 2);
@@ -233,7 +248,6 @@ export function scoreRole({ job, ctx, analysis }: ScorerInput): ScorerResult {
     }
   }
 
-  // Phase 3: role-domain tech bonus from parsed tags
   if (ctx.roleTechSet.size > 0 && analysis.hasParsedTags) {
     const roleTechHits = analysis.parsedTags.filter((tag) => {
       const norm = normalizeTag(tag);
@@ -251,22 +265,31 @@ export function scoreRole({ job, ctx, analysis }: ScorerInput): ScorerResult {
 }
 
 export function scoreForeignTech({ ctx, analysis }: ScorerInput): ScorerResult {
-  if (ctx.tagSet.size === 0 || analysis.titleTags.length === 0) return { score: 0, signals: [] };
+  if (ctx.tagSet.size === 0) return { score: 0, signals: [] };
 
-  const foreignPrimary = analysis.titleTags.filter(
-    (t) => isSpecialistTech(t) && !ctx.tagSet.has(normalizeTag(t)),
-  );
-  if (foreignPrimary.length === 0) return { score: 0, signals: [] };
+  const seen = new Set<string>();
+  const foreign: string[] = [];
+
+  for (const t of [...analysis.titleTags, ...analysis.parsedTags]) {
+    const norm = normalizeTag(t);
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    if (isSpecialistTech(t) && !ctx.tagSet.has(norm)) foreign.push(t);
+  }
+
+  if (foreign.length === 0) return { score: 0, signals: [] };
 
   return {
-    score: PENALTY.FOREIGN_TECH * foreignPrimary.length,
-    signals: [`foreign tech: ${foreignPrimary.join(", ")}`],
+    score: PENALTY.FOREIGN_TECH * foreign.length,
+    signals: [`foreign tech: ${foreign.join(", ")}`],
   };
 }
 
 export function scoreFreshness({ job }: ScorerInput): ScorerResult {
   if (!job.publishedAt) return { score: 0, signals: [] };
-  const h = (Date.now() - new Date(job.publishedAt).getTime()) / 3_600_000;
+  const postedMs = new Date(job.publishedAt).getTime();
+  if (isNaN(postedMs)) return { score: 0, signals: [] };
+  const h = (Date.now() - postedMs) / 3_600_000;
   if (h < 0) return { score: 0, signals: [] };
   return {
     score: Math.round(SCORING.FRESHNESS_MAX * Math.exp(-h / FRESHNESS.DECAY_HOURS)),
@@ -305,7 +328,7 @@ export function scoreJobQuality({ job, parsed, ctx, analysis }: ScorerInput): Sc
   let score = 0;
   const signals: string[] = [];
 
-  if (analysis.desc.length >= 50 && !analysis.hasParsedTags) {
+  if (analysis.desc.length >= 50 && !analysis.hasParsedTags && !isTechHeavy(analysis.desc)) {
     const lang = franc(analysis.desc, { minLength: 50 });
     if (lang !== "und") {
       const acceptedCodes = new Set(
@@ -341,9 +364,18 @@ export function scoreJobQuality({ job, parsed, ctx, analysis }: ScorerInput): Sc
 
   if (
     parsed?.workArrangement === "onsite" &&
-    ctx.workArrangement.some((w) => w.toLowerCase() === "remote")
+    ctx.workArrangement.some((w) => w.toLowerCase() === "remote") &&
+    !ctx.workArrangement.some((w) => w.toLowerCase() === "onsite")
   ) {
     return { score: 0, signals: ["onsite only"], hardReject: true };
+  }
+
+  if (
+    parsed?.locationRestriction &&
+    ctx.expandedLocations.length > 0 &&
+    !matchesAny(parsed.locationRestriction, ctx.expandedLocations)
+  ) {
+    return { score: 0, signals: [`region: ${parsed.locationRestriction}`], hardReject: true };
   }
 
   return { score, signals };

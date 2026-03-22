@@ -1,4 +1,3 @@
-/** A job that was filtered out, with its rejection reason for display in /status. */
 export interface RejectedJob {
   title: string;
   company: string;
@@ -6,7 +5,6 @@ export interface RejectedJob {
   reason: string;
 }
 
-/** Per-cycle poll stats, shown in /status. */
 export interface UserPollStats {
   checked: number;
   passed: number;
@@ -17,13 +15,11 @@ export interface UserPollStats {
 const pollStats = new Map<string, UserPollStats>();
 const MAX_REJECTED = 10;
 
-/** Get poll stats for a user, or undefined if no poll has run yet. */
 export function getPollStats(chatId: string): UserPollStats | undefined {
   return pollStats.get(chatId);
 }
 
-/** Get or create a fresh stats object for a user. */
-export function getOrCreateStats(chatId: string): UserPollStats {
+export function ensureStats(chatId: string): UserPollStats {
   let stats = pollStats.get(chatId);
   if (!stats) {
     stats = { checked: 0, passed: 0, sent: 0, rejected: [] };
@@ -32,7 +28,6 @@ export function getOrCreateStats(chatId: string): UserPollStats {
   return stats;
 }
 
-/** Remove stats for users that are no longer active. */
 export function clearPollStats(chatId: string): void {
   pollStats.delete(chatId);
 }

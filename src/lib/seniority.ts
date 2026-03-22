@@ -45,7 +45,6 @@ const SENIORITY_ALIASES: Readonly<Record<string, string>> = {
   "sr.": "Senior",
 };
 
-/** Normalize raw seniority to canonical level: "mid-level" -> "Middle", "SDE II" -> "Middle" */
 export function normalizeSeniority(raw: string | null): string | null {
   if (!raw) return null;
   const lower = raw.toLowerCase().trim();
@@ -54,7 +53,6 @@ export function normalizeSeniority(raw: string | null): string | null {
   return idx >= 0 ? SENIORITY_LEVELS[idx]! : null;
 }
 
-/** Detect seniority from a job title via regex. Returns null if none found */
 export function detectSeniority(title: string): string | null {
   for (const [label, pattern] of SENIORITY_PATTERNS) {
     if (pattern.test(title)) return label;

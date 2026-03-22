@@ -6,7 +6,6 @@ import { logOperationalError } from "../lib/errors";
 
 const FEED_URL = "https://djinni.co/jobs/rss/";
 
-/** Fetch jobs from the Djinni RSS feed. Company/location resolved via enrichment. */
 export async function fetchDjinni(): Promise<Job[]> {
   const feed = await rssParser.parseURL(FEED_URL);
   const jobs: Job[] = [];
@@ -32,8 +31,7 @@ export async function fetchDjinni(): Promise<Job[]> {
   return jobs;
 }
 
-// Company name is always resolved via enrichment (JSON-LD from job page).
-// RSS description HTML is too unreliable for extraction.
+// RSS description HTML is too unreliable for company name extraction
 
 interface EnrichmentData {
   company: string;
@@ -67,7 +65,6 @@ function parseJsonLd(html: string): EnrichmentData {
   }
 }
 
-/** Fetch company + location data from a Djinni job page via JSON-LD. Cached per URL. */
 export async function fetchDjinniEnrichment(url: string): Promise<EnrichmentData> {
   const cached = enrichCache.get(url);
   if (cached) return cached;

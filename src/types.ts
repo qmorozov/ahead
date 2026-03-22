@@ -1,6 +1,5 @@
 import { z } from "zod";
 
-/** Zod schema for a normalized job listing. All sources must produce data conforming to this shape. */
 export const JobSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -19,12 +18,10 @@ export const JobSchema = z.object({
   boardJobCount: z.number().optional(),
 });
 
-/** A normalized job listing aggregated from any source. */
 export type Job = z.infer<typeof JobSchema>;
 
 const SeniorityEnum = z.enum(["Intern", "Junior", "Middle", "Senior", "Staff", "Lead", "Manager"]);
 
-/** Zod schema for LLM-parsed job description data. */
 export const ParsedJobSchema = z.object({
   requirements: z.array(z.string()),
   niceToHave: z.array(z.string()),
@@ -36,15 +33,12 @@ export const ParsedJobSchema = z.object({
   locationRestriction: z.string().max(100).nullable().catch(null),
 });
 
-/** LLM-parsed job description data. */
 export type ParsedJob = z.infer<typeof ParsedJobSchema>;
 
-/** Unique key for deduplication: `source::id`. */
 export function jobKey(job: Job): string {
   return `${job.source.toLowerCase()}::${job.id}`;
 }
 
-/** True if the parse has any useful fields filled in. */
 export function hasContent(parsed: ParsedJob): boolean {
   return (
     parsed.requirements.length > 0 ||

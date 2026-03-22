@@ -60,11 +60,7 @@ function setSelectedText(s: Set<string>): string {
   return s.size > 0 ? `\n\nSelected: ${[...s].join(", ")}` : "";
 }
 
-function addNavButtons(
-  kb: InlineKeyboard,
-  step: WizardStep,
-  isLast = false,
-): void {
+function addNavButtons(kb: InlineKeyboard, step: WizardStep, isLast = false): void {
   if (STEP_BACK[step]) kb.text("\u2190 Back", "wiz:back");
   kb.text(isLast ? "\u2705 Finish setup" : "Next \u2192", "wiz:done");
 }

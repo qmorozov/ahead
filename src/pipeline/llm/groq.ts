@@ -1,9 +1,3 @@
-/**
- * Groq provider - uses their official SDK with typed responses.
- * Handles per-minute throttling (pThrottle) and transient retry (pRetry).
- * On hourly token quota exhaustion, marks itself unavailable for 1h.
- * Quota state is persisted to DB so it survives restarts.
- */
 import Groq from "groq-sdk";
 import pThrottle from "p-throttle";
 import pRetry, { AbortError } from "p-retry";

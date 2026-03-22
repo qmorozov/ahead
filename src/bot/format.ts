@@ -15,9 +15,9 @@ export function formatSettings(settings: UserSettings): string {
 
   return [
     `Status \u00b7 ${settings.paused ? "paused" : "active"}`,
-    `Roles \u00b7 ${fmt(settings.roles, "\u2014")}`,
-    `Technologies \u00b7 ${fmt(settings.keywords, "\u2014")}`,
-    `Exclude \u00b7 ${fmt(settings.excludeKeywords, "\u2014")}`,
+    `Roles \u00b7 ${fmt(settings.roles, "-")}`,
+    `Technologies \u00b7 ${fmt(settings.keywords, "-")}`,
+    `Exclude \u00b7 ${fmt(settings.excludeKeywords, "-")}`,
     `Work format \u00b7 ${fmt(settings.workArrangement, "any")}`,
     `Locations \u00b7 ${fmt(settings.locations, "any")}`,
     `Seniority \u00b7 ${fmt(settings.seniority, "any")}`,
