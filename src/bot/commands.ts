@@ -15,8 +15,7 @@ import { escapeHtml } from "./format";
 import { replyKb } from "./keyboards";
 import { wizardSessions, sweepStaleWizards, createWizardSession } from "./wizard";
 import { waitingForInput, sweepStaleInputs, showSettings } from "./settings";
-
-const MAX_TITLE_LEN = 40;
+import { DELIVERY } from "../constants";
 
 function truncate(text: string, max: number): string {
   return text.length > max ? text.slice(0, max) + "..." : text;
@@ -42,7 +41,7 @@ function formatActivity(s: UserSettings | null, stats: ReturnType<typeof getPoll
     .slice(-5)
     .map(
       (r) =>
-        `\u2022 <a href="${escapeHtml(r.url)}">${escapeHtml(truncate(r.title, MAX_TITLE_LEN))}</a> - ${escapeHtml(r.reason)}`,
+        `\u2022 <a href="${escapeHtml(r.url)}">${escapeHtml(truncate(r.title, DELIVERY.MAX_TITLE_LEN))}</a> - ${escapeHtml(r.reason)}`,
     );
 
   let hint = "";

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { db } from "./connection";
 import { ParsedJob, ParsedJobSchema } from "../types";
-import { log } from "../lib/logger";
+import { log, warn } from "../lib/logger";
 
 const SECONDS_PER_DAY = 86_400;
 
@@ -43,7 +43,8 @@ export function getCachedParse(jobKey: string): CachedParse | null {
     const result = ParsedJobSchema.safeParse(JSON.parse(row.data.parsed_json));
     if (!result.success) return null;
     return { parsed: result.data, quality: row.data.parse_quality === "quick" ? "quick" : "full" };
-  } catch {
+  } catch (err) {
+    warn(`Corrupt parse cache for ${jobKey}: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }

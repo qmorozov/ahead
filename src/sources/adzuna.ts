@@ -4,7 +4,7 @@ import { config, HTTP_TIMEOUT } from "../config";
 import { Job } from "../types";
 import { normalizeJobType, stripHtml, sleep } from "../lib/utils";
 import { formatSalaryRange, TO_USD } from "../lib/salary";
-import { logOperationalError } from "../lib/errors";
+import { warn } from "../lib/logger";
 
 const JobSchema = z.object({
   id: z.union([z.string(), z.number()]).transform(String),
@@ -102,7 +102,7 @@ export async function fetchAdzuna(): Promise<Job[]> {
     try {
       jobs.push(...(await fetchCountry(country)));
     } catch (err) {
-      logOperationalError(`Adzuna [${country}]`, err);
+      warn(`Adzuna [${country}]: ${err instanceof Error ? err.message : String(err)}`);
     }
     await sleep(500);
   }

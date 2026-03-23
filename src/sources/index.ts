@@ -2,7 +2,7 @@ import pRetry from "p-retry";
 import { AxiosError } from "axios";
 import { Job } from "../types";
 import { log } from "../lib/logger";
-import { logOperationalError } from "../lib/errors";
+import { warn } from "../lib/logger";
 import { recordSourceSuccess, recordSourceFailure, getSourceHealth } from "../db";
 import { fetchRemoteOK } from "./remoteok";
 import { fetchRemotive } from "./remotive";
@@ -86,7 +86,7 @@ export async function fetchWithRetry(source: JobSource): Promise<Job[]> {
     recordSourceSuccess(source.name, jobs.length);
     return jobs;
   } catch (error) {
-    logOperationalError(source.name, error);
+    warn(`${source.name}: ${error instanceof Error ? error.message : String(error)}`);
     const failures = (consecutiveFailures.get(source.name) ?? 0) + 1;
     consecutiveFailures.set(source.name, failures);
     recordSourceFailure(source.name);

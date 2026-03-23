@@ -87,10 +87,10 @@ export function scoreSeniority({ job, parsed, ctx }: ScorerInput): ScorerResult 
 }
 
 export function scoreTitleKeywords({ job, ctx }: ScorerInput): ScorerResult {
-  if (ctx.expandedKeywords.length === 0) return { score: 0, signals: [] };
-  if (!matchesAny(job.title, ctx.expandedKeywords)) return { score: 0, signals: [] };
+  if (ctx.stackKeywords.length === 0) return { score: 0, signals: [] };
+  if (!matchesAny(job.title, ctx.stackKeywords)) return { score: 0, signals: [] };
 
-  const matched = ctx.expandedKeywords.filter((kw) => testKeyword(job.title, kw));
+  const matched = ctx.stackKeywords.filter((kw) => testKeyword(job.title, kw));
   return { score: SCORING.TITLE_KEYWORD, signals: [`${matched.join(", ")} in title`] };
 }
 
@@ -204,8 +204,9 @@ function matchTitleRole(
   for (const r of expanded) {
     if (ROLE_CONFIGS[r]?.titlePattern.test(title)) {
       const isImplied = !original.has(r) && !original.has("fullstack");
+      const isFullstackMatch = r === "fullstack" && !original.has("fullstack");
       return {
-        score: isImplied ? Math.round(SCORING.ROLE_MATCH / 2) : SCORING.ROLE_MATCH,
+        score: isImplied && !isFullstackMatch ? Math.round(SCORING.ROLE_MATCH / 2) : SCORING.ROLE_MATCH,
         signal: isImplied ? `~${r}` : r,
       };
     }

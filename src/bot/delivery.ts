@@ -22,8 +22,7 @@ function getApi(): Api {
 }
 
 const pendingJobs = new Map<string, PendingJobEntry>();
-const STORE_TTL_MS = 24 * 60 * 60 * 1000;
-const MAX_PENDING = 500;
+const { STORE_TTL_MS, MAX_PENDING, MAX_SEND_RETRIES, RETRY_DELAY_MS } = DELIVERY;
 
 export function initPendingJobs(botApi: Api): void {
   api = botApi;
@@ -50,9 +49,6 @@ function cleanupPendingJobs(): void {
 export function getStoredJob(id: string): PendingJobEntry | undefined {
   return pendingJobs.get(id);
 }
-
-const MAX_SEND_RETRIES = 2;
-const RETRY_DELAY_MS = 2000;
 
 async function sendWithRetry(label: string, fn: () => Promise<unknown>): Promise<boolean> {
   for (let attempt = 1; attempt <= MAX_SEND_RETRIES; attempt++) {

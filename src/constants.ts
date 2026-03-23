@@ -10,7 +10,7 @@ export const SCORING = {
   SALARY_MATCH: 5, // points - salary meets user's minimum
   HIGH_QUALITY_SOURCE: 3, // points - job from a curated source (Greenhouse, Lever, HN)
   COMPANY_SIZE: 3, // points - company has many board listings (established employer)
-  DESC_KEYWORD_MAX: 15, // points - max score from keyword matches in description text
+  DESC_KEYWORD_MAX: 8, // points - max score from keyword matches in description text
   ROLE_TECH_MAX: 10, // points - max bonus from role-domain tech matches in parsed tags
 } as const;
 
@@ -23,7 +23,7 @@ export const PENALTY = {
   STAFFING_AGENCY: -10, // points - company name matches staffing agency pattern
   LOW_QUALITY: -10, // points - missing 2+ of company/description/location
   FOREIGN_LANGUAGE: -15, // points - description detected as non-English
-  FOREIGN_TECH: -15, // points - specialist tech in title user doesn't know (per occurrence)
+  FOREIGN_TECH: -10, // points - specialist tech in title user doesn't know (per occurrence)
   RELOCATION: -15, // points - description requires relocation
 } as const;
 
@@ -49,6 +49,11 @@ export const POLLING = {
   COMPANY_SIZE_MIN_JOBS: 10, // count - board job count threshold for "established" bonus
   MIN_INTERVAL_MINUTES: 10, // min - minimum user polling interval
   MAX_INTERVAL_MINUTES: 1440, // min - maximum user polling interval (24h)
+  MAX_NEW_PER_CYCLE: 100, // count - cap new jobs per user per cycle to prevent timeouts
+  MAX_DEFER_CYCLES: 3, // count - max cycles to defer unparsed irrelevant jobs before discarding
+  DEFER_TTL_MS: 24 * 60 * 60 * 1000, // ms - deferred jobs expire after 24h
+  USER_CONCURRENCY: 3, // count - max users processed in parallel per poll cycle
+  PER_USER_TIMEOUT_MS: 300_000, // ms - timeout per user in a poll cycle (5min)
 } as const;
 
 export const LLM = {
@@ -56,6 +61,9 @@ export const LLM = {
   QUOTA_COOLDOWN_MS: 60 * 60 * 1000, // ms - cooldown window for parse quota
   MAX_INPUT_CHARS: 2000, // chars - max description length sent to LLM
   CLASSIFY_BATCH_SIZE: 15, // count - jobs per LLM classify call
+  MAX_PARSE_ATTEMPTS: 2, // count - retry LLM parse on validation failure
+  MIN_DESCRIPTION_LENGTH: 50, // chars - skip LLM if description is shorter
+  PARSE_CONCURRENCY: 3, // count - parallel LLM parse workers
 } as const;
 
 export const WIZARD = {
@@ -68,4 +76,9 @@ export const WIZARD = {
 export const DELIVERY = {
   PAGE_SIZE: 7, // count - max jobs per digest message
   MAX_LENGTH: 4096, // chars - Telegram message length limit
+  STORE_TTL_MS: 24 * 60 * 60 * 1000, // ms - pending job store expiry (24h)
+  MAX_PENDING: 500, // count - max pending jobs in memory
+  MAX_SEND_RETRIES: 2, // count - Telegram send retries before giving up
+  RETRY_DELAY_MS: 2_000, // ms - delay between Telegram send retries
+  MAX_TITLE_LEN: 40, // chars - truncate job title in activity view
 } as const;

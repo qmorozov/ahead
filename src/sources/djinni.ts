@@ -1,8 +1,9 @@
 import axios from "axios";
+import { z } from "zod";
 import { HTTP_TIMEOUT } from "../config";
 import { rssParser, RssItemSchema } from "../lib/utils";
 import { Job } from "../types";
-import { logOperationalError } from "../lib/errors";
+import { warn } from "../lib/logger";
 
 const FEED_URL = "https://djinni.co/jobs/rss/";
 
@@ -49,18 +50,24 @@ function setCache(url: string, data: EnrichmentData): void {
   enrichCache.set(url, data);
 }
 
+const JsonLdSchema = z.object({
+  hiringOrganization: z.object({ name: z.string() }).optional(),
+  jobLocationType: z.string().optional(),
+});
+
 function parseJsonLd(html: string): EnrichmentData {
   const match = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/);
   if (!match?.[1]) return { company: "", location: "" };
 
   try {
-    const ld = JSON.parse(match[1]);
+    const result = JsonLdSchema.safeParse(JSON.parse(match[1]));
+    if (!result.success) return { company: "", location: "" };
     return {
-      company: ld.hiringOrganization?.name ?? "",
-      location: ld.jobLocationType === "TELECOMMUTE" ? "Remote" : "",
+      company: result.data.hiringOrganization?.name ?? "",
+      location: result.data.jobLocationType === "TELECOMMUTE" ? "Remote" : "",
     };
   } catch (err) {
-    logOperationalError("Djinni JSON-LD", err);
+    warn(`Djinni JSON-LD: ${err instanceof Error ? err.message : String(err)}`);
     return { company: "", location: "" };
   }
 }
@@ -75,7 +82,7 @@ export async function fetchDjinniEnrichment(url: string): Promise<EnrichmentData
     setCache(url, enriched);
     return enriched;
   } catch (err) {
-    logOperationalError("Djinni enrich", err);
+    warn(`Djinni enrich: ${err instanceof Error ? err.message : String(err)}`);
     return cached ?? { company: "", location: "" };
   }
 }

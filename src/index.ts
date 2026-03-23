@@ -1,4 +1,3 @@
-import cron, { ScheduledTask } from "node-cron";
 import { GrammyError } from "grammy";
 import { bot } from "./bot/instance";
 import {
@@ -42,46 +41,61 @@ setOnWizardComplete(async (chatId) => {
     } catch (error) {
       logError(`Poll [${chatId}]`, error);
     } finally {
-      startCron();
+      schedulePoll();
     }
   }
 });
 
-setOnIntervalChanged(() => startCron());
+setOnIntervalChanged(() => schedulePoll());
 
-let cronTask: ScheduledTask | null = null;
+let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
-function startCron(): void {
-  if (cronTask) cronTask.stop();
-
+function getPollIntervalMs(): number {
   const allSettings = loadAllSettings().filter((s) => isOnboarded(s));
-  const interval =
+  const minutes =
     allSettings.length > 0
       ? Math.max(
           POLLING.MIN_INTERVAL_MINUTES,
           Math.min(...allSettings.map((s) => s.checkIntervalMinutes)),
         )
       : 30;
-
-  cronTask = cron.schedule(`*/${interval} * * * *`, () => {
-    pollAllUsers().catch((error) => logError("Poll cycle", error));
-  });
-
-  log(`Cron tick: every ${interval}min (per-user intervals apply).`);
+  return minutes * 60_000;
 }
 
-const walCron = cron.schedule("0 * * * *", () => {
+function schedulePoll(): void {
+  if (pollTimer) clearTimeout(pollTimer);
+  const ms = getPollIntervalMs();
+  log(`Next poll in ${ms / 60_000}min.`);
+
+  pollTimer = setTimeout(async function tick() {
+    try {
+      await pollAllUsers();
+    } catch (error) {
+      logError("Poll cycle", error);
+    }
+    if (!shuttingDown) {
+      const ms = getPollIntervalMs();
+      log(`Next poll in ${ms / 60_000}min.`);
+      pollTimer = setTimeout(tick, ms);
+    }
+  }, ms);
+}
+
+const WAL_INTERVAL_MS = 60 * 60_000;
+const SWEEP_INTERVAL_MS = 5 * 60_000;
+
+const walTimer = setInterval(() => {
   try {
     checkpointWal();
   } catch (e) {
     logError("WAL checkpoint", e);
   }
-});
+}, WAL_INTERVAL_MS);
 
-const sweepCron = cron.schedule("*/5 * * * *", () => {
+const sweepTimer = setInterval(() => {
   sweepStaleWizards();
   sweepStaleInputs();
-});
+}, SWEEP_INTERVAL_MS);
 
 bot.api
   .setMyCommands([
@@ -102,7 +116,7 @@ if (onboarded.length > 0) {
     } catch (error) {
       logError("Initial poll", error);
     } finally {
-      startCron();
+      schedulePoll();
     }
   })();
 } else {
@@ -116,9 +130,9 @@ async function shutdown(signal: string): Promise<void> {
   shuttingDown = true;
   log(`${signal} received - shutting down...`);
 
-  cronTask?.stop();
-  walCron.stop();
-  sweepCron.stop();
+  if (pollTimer) clearTimeout(pollTimer);
+  clearInterval(walTimer);
+  clearInterval(sweepTimer);
 
   const deadline = Date.now() + 10_000;
   while (isPolling() && Date.now() < deadline) await sleep(200);

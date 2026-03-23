@@ -31,8 +31,7 @@ import {
   deleteDeferredByChat,
   type DeferredWrite,
 } from "../db";
-import { log, debug } from "../lib/logger";
-import { logUnexpectedError } from "../lib/errors";
+import { log, debug, logError } from "../lib/logger";
 import { Job, ParsedJob, jobKey } from "../types";
 import { parseJobDescription, classifyBatch, quickTagJob } from "./llm";
 import { normalizeForDedup, runWorkerPool } from "../lib/utils";
@@ -53,19 +52,27 @@ interface NewJob {
   normKey: string;
 }
 
-const MAX_NEW_PER_CYCLE = 100;
-const MAX_DEFER_CYCLES = 3;
-const DEFER_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const { MAX_NEW_PER_CYCLE, MAX_DEFER_CYCLES, DEFER_TTL_MS, USER_CONCURRENCY, PER_USER_TIMEOUT_MS } =
+  POLLING;
 
 const JOBS_LOG = path.join(process.cwd(), "logs", "jobs.jsonl");
 
+const loggedJobs = new Set<string>();
+
 function logNewJobs(chatId: string, jobs: NewJob[]): void {
   if (!config.debug || jobs.length === 0) return;
+  const unseen = jobs.filter((nj) => {
+    const logKey = `${chatId}::${nj.key}`;
+    if (loggedJobs.has(logKey)) return false;
+    loggedJobs.add(logKey);
+    return true;
+  });
+  if (unseen.length === 0) return;
   const dir = path.dirname(JOBS_LOG);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const ts = new Date().toISOString();
-  const lines = jobs.map((nj) => JSON.stringify({ ...nj.job, chatId, ts }));
-  fs.appendFileSync(JOBS_LOG, lines.join("\n") + "\n");
+  const lines = unseen.map((nj) => JSON.stringify({ ...nj.job, chatId, ts }));
+  fs.appendFile(JOBS_LOG, lines.join("\n") + "\n", () => {});
 }
 
 const lastPolledAt = new Map<string, number>();
@@ -156,8 +163,6 @@ function prioritizeForParsing(jobs: NewJob[], settings: UserSettings): NewJob[] 
   return [...high, ...low];
 }
 
-const PARSE_CONCURRENCY = 3;
-
 async function parseJobs(
   newJobs: NewJob[],
   settings: UserSettings,
@@ -174,7 +179,7 @@ async function parseJobs(
       const fullParse = await parseJobDescription(key, job.description ?? "");
       parsedMap.set(key, fullParse ?? (await quickTagJob(key, job.description ?? "")));
     },
-    PARSE_CONCURRENCY,
+    LLM.PARSE_CONCURRENCY,
   );
 
   const quickTagJobs = prioritized.slice(maxParses);
@@ -184,7 +189,7 @@ async function parseJobs(
       async ({ job, key }) => {
         parsedMap.set(key, await quickTagJob(key, job.description ?? ""));
       },
-      PARSE_CONCURRENCY,
+      LLM.PARSE_CONCURRENCY,
     );
   }
 
@@ -531,9 +536,6 @@ export async function pollAllUsers(): Promise<void> {
 
     const afterFetch = Date.now();
     const parseBudget = Math.max(10, Math.floor(LLM.PARSES_PER_HOUR / due.length));
-    const USER_CONCURRENCY = 3;
-    const PER_USER_TIMEOUT_MS = 180_000;
-
     await runWorkerPool(
       due,
       async (settings) => {
@@ -554,7 +556,7 @@ export async function pollAllUsers(): Promise<void> {
             clearTimeout(timer);
           }
         } catch (error) {
-          logUnexpectedError(`Poll [${settings.chatId}]`, error);
+          logError(`Poll [${settings.chatId}]`, error);
         }
       },
       USER_CONCURRENCY,
@@ -578,7 +580,7 @@ export async function pollSingleUser(settings: UserSettings): Promise<void> {
     await processForUser(settings, jobsBySource);
     lastPolledAt.set(settings.chatId, Date.now());
   } catch (error) {
-    logUnexpectedError(`Poll [${settings.chatId}]`, error);
+    logError(`Poll [${settings.chatId}]`, error);
   } finally {
     polling = false;
   }

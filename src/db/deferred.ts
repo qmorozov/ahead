@@ -48,17 +48,14 @@ export function loadDeferredForChat(chatId: string): Map<string, number> {
   return map;
 }
 
-export interface DeferredWrite {
-  type: "upsert" | "delete";
-  jobKey: string;
-  cycles?: number;
-  updatedAt?: number;
-}
+export type DeferredWrite =
+  | { type: "upsert"; jobKey: string; cycles: number; updatedAt: number }
+  | { type: "delete"; jobKey: string };
 
 export const flushDeferredBatch = db.transaction((chatId: string, writes: DeferredWrite[]) => {
   for (const w of writes) {
     if (w.type === "delete") sql.delete.run(chatId, w.jobKey);
-    else sql.upsert.run(chatId, w.jobKey, w.cycles!, w.updatedAt!);
+    else sql.upsert.run(chatId, w.jobKey, w.cycles, w.updatedAt);
   }
 });
 

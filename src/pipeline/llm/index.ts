@@ -143,13 +143,16 @@ function tryParseLLMOutput(raw: string | null | undefined): {
   return { parsed: postProcess(result.data), error: null };
 }
 
+const ClassifyResponseSchema = z.object({
+  relevant: z.array(z.number().int()),
+});
+
 const QuickTagSchema = z.object({
   primaryTags: z.array(z.string()).default([]),
   seniority: z.string().nullable().default(null),
 });
 
-const MAX_PARSE_ATTEMPTS = 2;
-const MIN_DESCRIPTION_LENGTH = 50;
+const { MAX_PARSE_ATTEMPTS, MIN_DESCRIPTION_LENGTH } = LLM;
 
 export interface ClassifyInput {
   index: number;
@@ -212,14 +215,10 @@ async function classifySingleBatch(
     });
     if (!raw) return null;
 
-    const parsed = JSON.parse(raw);
-    const nums = Array.isArray(parsed.relevant) ? parsed.relevant : null;
-    if (!nums || nums.length === 0) return null;
+    const result = ClassifyResponseSchema.safeParse(JSON.parse(raw));
+    if (!result.success || result.data.relevant.length === 0) return null;
 
-    return nums.filter(
-      (n: unknown): n is number =>
-        typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= batchSize,
-    );
+    return result.data.relevant.filter((n) => n >= 1 && n <= batchSize);
   } catch (err) {
     debug(`Classify batch error: ${err instanceof Error ? err.message : String(err)}`);
     return null;
