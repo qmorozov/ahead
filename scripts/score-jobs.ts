@@ -73,6 +73,7 @@ const ALL_SCORERS: ScorerName[] = [
   "salary",
   "excludeKeywords",
   "jobQuality",
+  "feedback",
 ];
 
 interface ScoredJob {

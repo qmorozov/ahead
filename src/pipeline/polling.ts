@@ -7,9 +7,10 @@ import {
   scoreJob,
   computeThreshold,
   clearCachedContext,
+  loadFeedbackIntoContext,
   ScoringContext,
 } from "./filter";
-import { sendJob, sendJobs } from "../bot/delivery";
+import { sendJobBatch, sendJobs } from "../bot/delivery";
 import { config } from "../config";
 import { POLLING, LLM } from "../constants";
 import {
@@ -29,7 +30,10 @@ import {
   flushDeferredBatch,
   pruneDeferredDb,
   deleteDeferredByChat,
+  pruneFeedback,
+  buildPreferenceSummary,
   type DeferredWrite,
+  type TagPreference,
 } from "../db";
 import { log, debug, logError } from "../lib/logger";
 import { Job, ParsedJob, jobKey } from "../types";
@@ -284,11 +288,9 @@ async function deliverIndividually(
   jobs: NewJob[],
   getParsed: (nj: NewJob) => ParsedJob | null,
 ): Promise<NewJob[]> {
-  const delivered: NewJob[] = [];
-  for (const nj of jobs) {
-    if (await sendJob(chatId, nj.job, getParsed(nj))) delivered.push(nj);
-  }
-  return delivered;
+  const batch = jobs.map((nj) => ({ job: nj.job, parsed: getParsed(nj) }));
+  const results = await sendJobBatch(chatId, batch);
+  return jobs.filter((_, i) => results[i]);
 }
 
 async function deliverJobs(
@@ -319,7 +321,9 @@ async function deliverJobs(
   return newJobs.filter((nj) => sentKeys.has(nj.key));
 }
 
-function buildUserProfile(settings: UserSettings): string {
+type Preferences = { avoided: TagPreference[]; preferred: TagPreference[] } | null;
+
+function buildUserProfile(settings: UserSettings, prefs: Preferences): string {
   const sanitize = (s: string) =>
     s
       .replace(/[\n\r]/g, " ")
@@ -338,6 +342,8 @@ function buildUserProfile(settings: UserSettings): string {
   if (settings.excludeKeywords.length > 0) {
     profile += `. Exclude these technologies (not relevant): ${sanitize(settings.excludeKeywords.join(", "))}`;
   }
+  const prefSummary = buildPreferenceSummary(settings.chatId, prefs);
+  if (prefSummary) profile += `. Learned preferences: ${prefSummary}`;
   return profile;
 }
 
@@ -345,8 +351,9 @@ async function preFilterByLLM(
   chatId: string,
   allNew: NewJob[],
   settings: UserSettings,
+  prefs: Preferences,
 ): Promise<{ candidates: NewJob[]; preFilteredJobs: NewJob[] }> {
-  const profile = buildUserProfile(settings);
+  const profile = buildUserProfile(settings, prefs);
   const classifyInput = allNew.map((nj, i) => ({
     index: i,
     title: nj.job.title,
@@ -413,6 +420,7 @@ async function processForUser(
   const firstRun = isFirstRun(chatId);
   const stats = ensureStats(chatId);
   const ctx = buildScoringContext(settings);
+  const feedbackPrefs = loadFeedbackIntoContext(chatId, ctx);
 
   let allNew = collectNewJobs(jobsBySource, settings, chatId, ctx);
   logNewJobs(chatId, allNew);
@@ -435,7 +443,7 @@ async function processForUser(
 
   let finalized = false;
   try {
-    const { candidates, preFilteredJobs } = await preFilterByLLM(chatId, allNew, settings);
+    const { candidates, preFilteredJobs } = await preFilterByLLM(chatId, allNew, settings, feedbackPrefs);
     if (candidates.length === 0) return;
 
     const parsedMap = await parseJobs(candidates, settings, parseBudget);
@@ -525,6 +533,7 @@ export async function pollAllUsers(): Promise<void> {
     pruneCompanyUrls();
     pruneSeenTitles();
     pruneDeferredDb(Date.now() - DEFER_TTL_MS);
+    pruneFeedback();
     for (const s of due) pruneSeen(s.chatId);
 
     const activeIds = new Set(active.map((s) => s.chatId));

@@ -75,3 +75,10 @@ export {
   getAllSourceHealth,
   type SourceHealthRow,
 } from "./source-health";
+export {
+  recordFeedback,
+  getTagPreferences,
+  buildPreferenceSummary,
+  pruneFeedback,
+  type TagPreference,
+} from "./feedback";

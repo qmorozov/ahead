@@ -115,6 +115,18 @@ const migrations: string[] = [
     last_job_count INTEGER,
     fail_streak INTEGER NOT NULL DEFAULT 0
   );`,
+
+  `CREATE TABLE IF NOT EXISTS feedback (
+    chat_id TEXT NOT NULL,
+    job_key TEXT NOT NULL,
+    signal TEXT NOT NULL,
+    tags TEXT NOT NULL DEFAULT '[]',
+    company TEXT DEFAULT '',
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, job_key)
+  );
+  CREATE INDEX IF NOT EXISTS idx_feedback_chat ON feedback(chat_id);
+  CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at);`,
 ];
 
 const currentVersion = (db.pragma("user_version", { simple: true }) as number) ?? 0;

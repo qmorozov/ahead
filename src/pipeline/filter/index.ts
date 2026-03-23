@@ -1,4 +1,4 @@
-import { UserSettings } from "../../db";
+import { UserSettings, getTagPreferences, type TagPreference } from "../../db";
 import { Job, ParsedJob } from "../../types";
 import { extractSalaryUsd } from "../../lib/salary";
 import { SCORING } from "../../constants";
@@ -28,6 +28,7 @@ import {
   scoreSalary,
   scoreExcludeKeywords,
   scoreJobQuality,
+  scoreFeedback,
 } from "./scorers";
 
 export interface ScoringContext {
@@ -44,6 +45,8 @@ export interface ScoringContext {
   workArrangement: string[];
   expandedLocations: string[];
   acceptedLanguages: Set<string>;
+  avoidedTags: Set<string>;
+  preferredTags: Set<string>;
 }
 
 export interface ScorerResult {
@@ -72,7 +75,8 @@ export type ScorerName =
   | "freshness"
   | "salary"
   | "excludeKeywords"
-  | "jobQuality";
+  | "jobQuality"
+  | "feedback";
 
 export interface ScoreResult {
   score: number;
@@ -146,6 +150,8 @@ export function buildScoringContext(settings: UserSettings): ScoringContext {
     workArrangement: settings.workArrangement,
     expandedLocations: expandLocations(settings.locations),
     acceptedLanguages: new Set(settings.acceptedLanguages.map((l) => l.toLowerCase())),
+    avoidedTags: new Set<string>(),
+    preferredTags: new Set<string>(),
   };
   ctxCache.set(settings.chatId, { hash, ctx });
   if (ctxCache.size > MAX_CTX_CACHE) {
@@ -194,6 +200,7 @@ const scorers: Array<[ScorerName, Scorer]> = [
   ["salary", scoreSalary],
   ["excludeKeywords", scoreExcludeKeywords],
   ["jobQuality", scoreJobQuality],
+  ["feedback", scoreFeedback],
 ];
 
 export function computeThreshold(ctx: ScoringContext): number {
@@ -202,6 +209,20 @@ export function computeThreshold(ctx: ScoringContext): number {
   if (ctx.roles.length > 0) t += 3;
   if (ctx.senioritySet.size > 0) t += 2;
   return t;
+}
+
+export function loadFeedbackIntoContext(
+  chatId: string,
+  ctx: ScoringContext,
+): { avoided: TagPreference[]; preferred: TagPreference[] } | null {
+  ctx.avoidedTags.clear();
+  ctx.preferredTags.clear();
+  const prefs = getTagPreferences(chatId);
+  if (prefs) {
+    for (const p of prefs.avoided) ctx.avoidedTags.add(normalizeTag(p.tag));
+    for (const p of prefs.preferred) ctx.preferredTags.add(normalizeTag(p.tag));
+  }
+  return prefs;
 }
 
 export function scoreJob(job: Job, parsed: ParsedJob | null, ctx: ScoringContext): ScoreResult {

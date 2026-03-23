@@ -72,15 +72,62 @@ export async function sendJob(
   job: Job,
   parsed: ParsedJob | null = null,
 ): Promise<boolean> {
+  const id = crypto.randomBytes(6).toString("base64url");
+  const entry: PendingJobEntry = { id, chatId, job, parsed, storedAt: Date.now() };
+  pendingJobs.set(id, entry);
+  savePendingJobBatch([entry]);
+
   return sendWithRetry("Telegram", () =>
     getApi().sendMessage(chatId, formatMessage(job, parsed), {
       parse_mode: "HTML",
       link_preview_options: { is_disabled: true },
       reply_markup: {
-        inline_keyboard: [[{ text: "View job posting", url: job.url }]],
+        inline_keyboard: [
+          [{ text: "View job posting", url: job.url }],
+          [
+            { text: "\ud83d\udc4d Relevant", callback_data: `like:${id}` },
+            { text: "\ud83d\udc4e Not for me", callback_data: `nope:${id}` },
+          ],
+        ],
       },
     }),
   );
+}
+
+export async function sendJobBatch(
+  chatId: string,
+  jobs: Array<{ job: Job; parsed: ParsedJob | null }>,
+): Promise<boolean[]> {
+  const entries: PendingJobEntry[] = [];
+  const results: boolean[] = [];
+
+  for (const { job, parsed } of jobs) {
+    const id = crypto.randomBytes(6).toString("base64url");
+    const entry: PendingJobEntry = { id, chatId, job, parsed, storedAt: Date.now() };
+    pendingJobs.set(id, entry);
+    entries.push(entry);
+
+    results.push(
+      await sendWithRetry("Telegram", () =>
+        getApi().sendMessage(chatId, formatMessage(job, parsed), {
+          parse_mode: "HTML",
+          link_preview_options: { is_disabled: true },
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "View job posting", url: job.url }],
+              [
+                { text: "\ud83d\udc4d Relevant", callback_data: `like:${id}` },
+                { text: "\ud83d\udc4e Not for me", callback_data: `nope:${id}` },
+              ],
+            ],
+          },
+        }),
+      ),
+    );
+  }
+
+  savePendingJobBatch(entries);
+  return results;
 }
 
 interface DigestPage {

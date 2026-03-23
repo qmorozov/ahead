@@ -176,6 +176,7 @@ const deleteStatements = {
   seenTitles: db.prepare(`DELETE FROM seen_titles WHERE chat_id = ?`),
   pendingJobs: db.prepare(`DELETE FROM pending_jobs WHERE chat_id = ?`),
   deferredJobs: db.prepare(`DELETE FROM deferred_jobs WHERE chat_id = ?`),
+  feedback: db.prepare(`DELETE FROM feedback WHERE chat_id = ?`),
   settings: db.prepare(`DELETE FROM settings WHERE chat_id = ?`),
 };
 
@@ -184,6 +185,7 @@ const deleteUserDataTx = db.transaction((chatId: string) => {
   deleteStatements.seenTitles.run(chatId);
   deleteStatements.pendingJobs.run(chatId);
   deleteStatements.deferredJobs.run(chatId);
+  deleteStatements.feedback.run(chatId);
   deleteStatements.settings.run(chatId);
 });
 

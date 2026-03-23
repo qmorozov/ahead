@@ -1,7 +1,7 @@
 import { franc } from "franc-min";
 import { SENIORITY_ORDER } from "../../lib/seniority";
 import { extractSalaryUsd } from "../../lib/salary";
-import { SCORING, PENALTY, STACK, FRESHNESS, POLLING, HIGH_QUALITY_SOURCES } from "../../constants";
+import { SCORING, PENALTY, STACK, FRESHNESS, POLLING, HIGH_QUALITY_SOURCES, FEEDBACK } from "../../constants";
 import { CANONICAL_TO_DOMAINS, ALL_KNOWN_TECHS } from "../../lib/tech-data";
 import { testKeyword, matchesAny, normalizeTag, GENERIC_TOOLS } from "./matching";
 import { ROLE_CONFIGS, GENERIC_DEV_PATTERN } from "./roles";
@@ -379,5 +379,23 @@ export function scoreJobQuality({ job, parsed, ctx, analysis }: ScorerInput): Sc
     return { score: 0, signals: [`region: ${parsed.locationRestriction}`], hardReject: true };
   }
 
+  return { score, signals };
+}
+
+export function scoreFeedback({ ctx, analysis }: ScorerInput): ScorerResult {
+  if (ctx.avoidedTags.size === 0 && ctx.preferredTags.size === 0) return { score: 0, signals: [] };
+
+  let score = 0;
+  const signals: string[] = [];
+  const tags = analysis.hasParsedTags ? analysis.parsedTags : analysis.titleTags;
+
+  for (const t of tags) {
+    const norm = normalizeTag(t);
+    if (ctx.avoidedTags.has(norm)) score += FEEDBACK.AVOID_PENALTY;
+    if (ctx.preferredTags.has(norm)) score += FEEDBACK.PREFER_BONUS;
+  }
+
+  if (score < 0) signals.push("avoided by feedback");
+  if (score > 0) signals.push("preferred by feedback");
   return { score, signals };
 }

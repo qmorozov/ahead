@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { db } from "./connection";
-
-const THIRTY_DAYS_S = 2_592_000;
+import { THIRTY_DAYS_S } from "../constants";
 
 const JobKeyRowSchema = z.object({ job_key: z.string() });
 const NormKeyRowSchema = z.object({ norm_key: z.string() });

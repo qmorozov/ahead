@@ -1,3 +1,5 @@
+export const THIRTY_DAYS_S = 2_592_000; // seconds in 30 days
+
 export const SCORING = {
   THRESHOLD: 20, // points - base pass threshold, raised dynamically for complex profiles
   TITLE_KEYWORD: 25, // points - user keyword found in job title
@@ -71,6 +73,11 @@ export const WIZARD = {
   INPUT_TTL_MS: 10 * 60 * 1000, // ms - free-text input prompt expires after 10min
   MAX_ARRAY_ITEMS: 50, // count - max items in any user settings array
   MAX_ITEM_LENGTH: 100, // chars - max length of a single settings item
+} as const;
+
+export const FEEDBACK = {
+  AVOID_PENALTY: -5, // points - penalty per avoided tag found in job
+  PREFER_BONUS: 3, // points - bonus per preferred tag found in job
 } as const;
 
 export const DELIVERY = {

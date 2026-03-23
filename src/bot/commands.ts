@@ -7,8 +7,10 @@ import {
   saveSettings,
   deleteUserData,
   getAllSourceHealth,
+  recordFeedback,
 } from "../db";
 import { sources } from "../sources";
+import { jobKey } from "../types";
 import { getStoredJob, sendJob } from "./delivery";
 import { getPollStats, clearUserState } from "../pipeline/polling";
 import { escapeHtml } from "./format";
@@ -211,4 +213,25 @@ commandHandlers.callbackQuery(/^job:(.+)$/, async (ctx) => {
   }
   await ctx.answerCallbackQuery();
   await sendJob(String(ctx.chat!.id), stored.job, stored.parsed);
+});
+
+commandHandlers.callbackQuery(/^(like|nope):(.+)$/, async (ctx) => {
+  const signal = ctx.match[1] === "like" ? "view" : "reject";
+  const stored = getStoredJob(ctx.match[2]!);
+  if (!stored) {
+    await ctx.answerCallbackQuery("Expired.");
+    return;
+  }
+  const chatId = String(ctx.chat!.id);
+  const tags = stored.parsed?.primaryTags ?? stored.job.tags;
+  recordFeedback(chatId, jobKey(stored.job), signal, tags, stored.job.company);
+  await ctx.answerCallbackQuery(signal === "view" ? "Thanks!" : "Noted.");
+  const msgId = ctx.callbackQuery.message?.message_id;
+  if (msgId) {
+    ctx.api
+      .editMessageReplyMarkup(chatId, msgId, {
+        reply_markup: { inline_keyboard: [[{ text: "View job posting", url: stored.job.url }]] },
+      })
+      .catch(() => {});
+  }
 });
