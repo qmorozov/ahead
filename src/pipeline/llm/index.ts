@@ -15,11 +15,13 @@ import { LLM } from "../../constants";
 import type { LLMProvider, CallOptions, ModelTier } from "./types";
 import { createGroqProvider } from "./groq";
 import { createCerebrasProvider } from "./cerebras";
+import { createGeminiProvider } from "./gemini";
 import { PARSE_PROMPT, QUICK_TAG_PROMPT, CLASSIFY_PROMPT } from "./prompts";
 
 const providers: LLMProvider[] = [
   config.groqApiKey ? createGroqProvider(config.groqApiKey) : null,
   config.cerebrasApiKey ? createCerebrasProvider(config.cerebrasApiKey) : null,
+  config.geminiApiKey ? createGeminiProvider(config.geminiApiKey) : null,
 ].filter((p): p is LLMProvider => p !== null);
 
 async function callLLM(

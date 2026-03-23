@@ -4,7 +4,7 @@ Telegram bot that monitors remote job boards and sends personalized job alerts.
 
 Aggregates from 14 sources (RemoteOK, Remotive, Jobicy, Himalayas, Arbeitnow, WeWorkRemotely, Djinni, TheMuse, WorkingNomads, RemoteFirstJobs, HN, Adzuna, Greenhouse, Lever), scores each job against your profile, and sends a ranked digest.
 
-Optionally uses Groq and Cerebras to extract structured data from descriptions (lightweight model for classification, heavy model for parsing). Falls back to keyword matching when LLM is unavailable.
+Uses Groq, Cerebras, and Gemini to extract structured data from descriptions (lightweight model for classification, heavy model for parsing). Providers cascade automatically — when one hits its quota, the next takes over. Falls back to keyword matching when all LLM providers are unavailable.
 
 ## Setup
 
@@ -13,7 +13,8 @@ Node.js 18+, bot token from [@BotFather](https://t.me/BotFather).
 ```bash
 npm install
 cp .env.example .env
-# fill in TELEGRAM_BOT_TOKEN (required), GROQ_API_KEY, CEREBRAS_API_KEY, ADZUNA keys (optional)
+# fill in TELEGRAM_BOT_TOKEN (required)
+# optional: GROQ_API_KEY, CEREBRAS_API_KEY, GEMINI_API_KEY, ADZUNA_APP_ID/KEY
 npm run dev
 ```
 
@@ -33,7 +34,7 @@ Production: `npm start`
   → Telegram digest or individual messages
 ```
 
-Polling interval configurable per user (default 30 min). Each job parsed once and cached in SQLite. Groq is primary LLM, Cerebras kicks in as fallback when quota is exhausted.
+Polling interval configurable per user (default 30 min, minimum 10 min). Each job parsed once and cached in SQLite. LLM providers: Groq (primary) → Cerebras → Gemini (fallback chain).
 
 ## Commands
 
@@ -44,9 +45,15 @@ Polling interval configurable per user (default 30 min). Each job parsed once an
 - `/delete` - delete all your data
 - `/cancel` - cancel current action
 
+## Scripts
+
+- `npm run seed-boards` - download Greenhouse/Lever board slugs
+- `npm run build-tech-data` - regenerate tech ontology from MIND dataset
+- `npx tsx scripts/score-jobs.ts` - offline scoring analysis (requires `DEBUG=1` log data)
+
 ## Tech
 
-TypeScript, grammY, SQLite, Groq, Cerebras, Zod, node-cron.
+TypeScript, grammY, SQLite (better-sqlite3), Groq, Cerebras, Gemini, Zod.
 
 ## License
 
