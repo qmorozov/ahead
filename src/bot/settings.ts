@@ -121,6 +121,11 @@ export function toggleSettingsKb(
   caseSensitive = true,
 ): InlineKeyboard {
   const kb = toggleGrid(presets, selected, `set:${prefix}`, 3, caseSensitive);
+  const presetSet = new Set(caseSensitive ? presets : presets.map((p) => p.toLowerCase()));
+  const custom = selected.filter((s) => !presetSet.has(caseSensitive ? s : s.toLowerCase()));
+  for (const item of custom) {
+    kb.text(`\u2715 ${item}`, `set:${prefix}:${item}`).row();
+  }
   return kb.text("\u2190 Back", "set:back");
 }
 
