@@ -573,6 +573,7 @@ export async function pollAllUsers(): Promise<void> {
 
     log("Poll cycle complete.");
   } finally {
+    loggedJobs.clear();
     polling = false;
   }
 }

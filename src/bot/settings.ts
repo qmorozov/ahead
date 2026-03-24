@@ -647,10 +647,10 @@ settingsCallbacks.callbackQuery(/^set:/, async (ctx) => {
 
   // register for text input if this editor accepts typed values
   const editor = EDITOR_MAP[key];
-  if (isArrayKey(key) || editor?.inputKey) {
+  if ((isArrayKey(key) || editor?.inputKey) && msgId !== undefined) {
     waitingForInput.set(chatId, {
       key: editor?.inputKey ?? key,
-      messageId: msgId!,
+      messageId: msgId,
       createdAt: Date.now(),
     });
   }

@@ -99,25 +99,26 @@ export async function sendJobBatch(
   jobs: Array<{ job: Job; parsed: ParsedJob | null }>,
 ): Promise<boolean[]> {
   const entries: PendingJobEntry[] = [];
-  const results: boolean[] = [];
-
   for (const { job, parsed } of jobs) {
     const id = crypto.randomBytes(6).toString("base64url");
-    const entry: PendingJobEntry = { id, chatId, job, parsed, storedAt: Date.now() };
-    pendingJobs.set(id, entry);
-    entries.push(entry);
+    entries.push({ id, chatId, job, parsed, storedAt: Date.now() });
+    pendingJobs.set(id, entries[entries.length - 1]!);
+  }
+  savePendingJobBatch(entries);
 
+  const results: boolean[] = [];
+  for (const entry of entries) {
     results.push(
       await sendWithRetry("Telegram", () =>
-        getApi().sendMessage(chatId, formatMessage(job, parsed), {
+        getApi().sendMessage(chatId, formatMessage(entry.job, entry.parsed), {
           parse_mode: "HTML",
           link_preview_options: { is_disabled: true },
           reply_markup: {
             inline_keyboard: [
-              [{ text: "View job posting", url: job.url }],
+              [{ text: "View job posting", url: entry.job.url }],
               [
-                { text: "\ud83d\udc4d Relevant", callback_data: `like:${id}` },
-                { text: "\ud83d\udc4e Not for me", callback_data: `nope:${id}` },
+                { text: "\ud83d\udc4d Relevant", callback_data: `like:${entry.id}` },
+                { text: "\ud83d\udc4e Not for me", callback_data: `nope:${entry.id}` },
               ],
             ],
           },
@@ -125,8 +126,6 @@ export async function sendJobBatch(
       ),
     );
   }
-
-  savePendingJobBatch(entries);
   return results;
 }
 
