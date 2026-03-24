@@ -92,16 +92,18 @@ export function normalizeForDedup(title: string, company: string): string {
   return `${cleanText(t)}::${cleanText(c)}`;
 }
 
+const SEPARATOR_RE = /[,/]|\bor\b|\bили\b|\babo\b/i;
+
 export function parseCommaSeparated(text: string): string[] {
   return text
-    .split(",")
+    .split(SEPARATOR_RE)
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
 }
 
 export function parseCommaSeparatedRaw(text: string): string[] {
   return text
-    .split(",")
+    .split(SEPARATOR_RE)
     .map((s) => s.trim())
     .filter(Boolean);
 }
