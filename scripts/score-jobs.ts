@@ -74,6 +74,7 @@ const ALL_SCORERS: ScorerName[] = [
   "excludeKeywords",
   "jobQuality",
   "feedback",
+  "primaryStack",
 ];
 
 interface ScoredJob {
