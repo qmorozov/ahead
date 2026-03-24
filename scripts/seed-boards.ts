@@ -11,6 +11,9 @@ const SOURCES = {
   lever: [
     "https://raw.githubusercontent.com/Feashliaa/job-board-aggregator/main/data/lever_companies.json",
   ],
+  ashby: [
+    "https://raw.githubusercontent.com/Feashliaa/job-board-aggregator/main/data/ashby_companies.json",
+  ],
 };
 
 // Extra slugs scraped from a curated README (boards.greenhouse.io/X, jobs.lever.co/X)
@@ -39,12 +42,19 @@ async function main() {
     ...extractSlugs(readme, /jobs\.lever\.co\/([a-zA-Z0-9_-]+)/g),
   ];
 
+  const ashby = [
+    ...(await fetchJson(SOURCES.ashby[0]!)),
+    ...extractSlugs(readme, /jobs\.ashbyhq\.com\/([a-zA-Z0-9_-]+)/g),
+  ];
+
   const ghUnique = [...new Set(greenhouse)];
   const lvUnique = [...new Set(lever)];
+  const ashUnique = [...new Set(ashby)];
 
-  log(`Seeding ${ghUnique.length} Greenhouse + ${lvUnique.length} Lever boards...`);
+  log(`Seeding ${ghUnique.length} Greenhouse + ${lvUnique.length} Lever + ${ashUnique.length} Ashby boards...`);
   seedBoards(ghUnique, "greenhouse");
   seedBoards(lvUnique, "lever");
+  seedBoards(ashUnique, "ashby");
   log("Done.");
 }
 

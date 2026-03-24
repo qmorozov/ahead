@@ -40,6 +40,7 @@ const JOB_TYPE_MAP: Record<string, string> = {
   freelance: "freelance",
   internship: "internship",
   intern: "internship",
+  temporary: "contract",
 };
 
 export function normalizeJobType(raw: string): string | undefined {

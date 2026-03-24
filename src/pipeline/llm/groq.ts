@@ -40,6 +40,7 @@ export function createGroqProvider(apiKey: string): LLMProvider {
   }
 
   function markQuotaExhausted(): void {
+    if (isQuotaCoolingDown()) return;
     quotaExhaustedAt = Date.now();
     setLlmQuotaValue("quota_exhausted_at", String(quotaExhaustedAt));
     log("Groq quota exhausted, pausing for 1h");
