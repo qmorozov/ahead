@@ -22,6 +22,7 @@ import { toggleGrid, toRows } from "./keyboards";
 type SettingKey =
   | "roles"
   | "keywords"
+  | "primaryStack"
   | "excludeKeywords"
   | "locations"
   | "seniority"
@@ -38,6 +39,7 @@ type ArraySettingKey = "keywords" | "excludeKeywords" | "locations";
 const LABELS: Record<SettingKey, string> = {
   roles: "Roles",
   keywords: "Technologies",
+  primaryStack: "Core Stack",
   excludeKeywords: "Exclude",
   locations: "Locations",
   seniority: "Seniority",
@@ -87,6 +89,7 @@ function settingsKb(s: UserSettings): InlineKeyboard {
     .text("Roles", "set:roles")
     .text("Technologies", "set:keywords")
     .row()
+    .text("Core Stack", "set:primaryStack")
     .text("Exclude", "set:excludeKeywords")
     .text("Locations", "set:locations")
     .row()
@@ -281,7 +284,7 @@ function showIntervalEditor(ctx: Context, chatId: string, value: number, msgId?:
   editOrSend(
     ctx,
     chatId,
-    `\u2699\ufe0f Interval\n\nCurrently: every ${value} minutes.\nTap or type a number.`,
+    `\u2699\ufe0f Interval\n\nCurrently: every ${value} minutes.\nTap or type a number (${POLLING.MIN_INTERVAL_MINUTES}-${POLLING.MAX_INTERVAL_MINUTES}).`,
     intervalKb(value),
     msgId,
   ).catch((e) => logError("showIntervalEditor", e));
@@ -371,6 +374,19 @@ function buildToggleRoute(cfg: ToggleRouteConfig): CallbackRoute {
 }
 
 const CUSTOM_ROUTES: readonly CallbackRoute[] = [
+  {
+    prefix: "set:pstack:",
+    handle(value, s, ctx, chatId, msgId) {
+      const idx = s.primaryStack.indexOf(value);
+      if (idx >= 0) s.primaryStack.splice(idx, 1);
+      else if (s.primaryStack.length < 3) s.primaryStack.push(value);
+      saveSettings(s);
+      showToggleEditor(
+        ctx, chatId, "Core Stack (pick 2-3)", s.primaryStack,
+        toggleSettingsKb(s.keywords, s.primaryStack, "pstack"), msgId,
+      );
+    },
+  },
   {
     prefix: "set:loc:",
     handle(value, s, ctx, chatId, msgId) {
@@ -495,6 +511,16 @@ interface EditorConfig {
 }
 
 const EDITOR_MAP: Readonly<Record<string, EditorConfig>> = {
+  primaryStack: {
+    show: (ctx, cid, s, mid) => {
+      const techs = s.keywords;
+      if (techs.length === 0) {
+        showToggleEditor(ctx, cid, "Core Stack", s.primaryStack, toggleSettingsKb([], s.primaryStack, "pstack"), mid);
+        return;
+      }
+      showToggleEditor(ctx, cid, "Core Stack (2-3 techs, more = more results)", s.primaryStack, toggleSettingsKb(techs, s.primaryStack, "pstack"), mid);
+    },
+  },
   roles: {
     show: (ctx, cid, s, mid) =>
       showToggleEditor(

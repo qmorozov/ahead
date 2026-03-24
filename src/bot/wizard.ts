@@ -36,6 +36,7 @@ export function createWizardSession(chatId: string, messageId: number): WizardSe
     createdAt: Date.now(),
     roles: new Set(),
     technologies: [],
+    primaryStack: new Set(),
     seniority: new Set(),
     jobTypes: new Set(),
     workArrangement: new Set(),
@@ -81,11 +82,11 @@ function renderTechnologiesStep(session: WizardSession): { text: string; kb: Inl
   const presets = getTechPresets(session.roles);
   const selected =
     session.technologies.length > 0 ? `\n\n\u2705 ${session.technologies.join(", ")}` : "";
-  const hint = `\n\n\ud83d\udca1 Tap your main technologies first - they get higher priority.`;
   const text =
     `${stepLabel("technologies")}\n\n` +
-    `What technologies do you work with?` +
-    `${selected}${hint}`;
+    `What technologies do you work with?\n` +
+    `Add all you know — you'll pick your core ones next.` +
+    `${selected}`;
   const kb = toggleGrid(presets, session.technologies, "wiz:tech", 3);
   addNavButtons(kb, "technologies");
   return { text, kb };
@@ -102,10 +103,32 @@ function renderSeniorityStep(session: WizardSession): { text: string; kb: Inline
   return { text, kb };
 }
 
+function renderPrimaryStackStep(session: WizardSession): { text: string; kb: InlineKeyboard } {
+  const techs = session.technologies;
+  if (techs.length === 0) {
+    const text = `${stepLabel("primaryStack")}\n\nAdd technologies first, then pick your core stack.`;
+    const kb = new InlineKeyboard();
+    addNavButtons(kb, "primaryStack");
+    return { text, kb };
+  }
+  const sel = session.primaryStack.size > 0 ? `\n\nCore: ${[...session.primaryStack].join(", ")}` : "";
+  const text =
+    `${stepLabel("primaryStack")}\n\n` +
+    `Pick 2-3 technologies that make your stack unique.\n` +
+    `e.g. React for frontend, Laravel for PHP, Selenium for QA.\n` +
+    `Avoid generic tools like Docker or Git here.\n\n` +
+    `More picks = more results. Skip = no filter.` +
+    `${sel}`;
+  const kb = toggleGrid(techs, session.primaryStack, "wiz:prim", 3);
+  addNavButtons(kb, "primaryStack");
+  return { text, kb };
+}
+
 function renderJobTypesStep(session: WizardSession): { text: string; kb: InlineKeyboard } {
   const text =
     `${stepLabel("jobTypes")}\n\n` +
-    `What type of employment?` +
+    `What type of employment?\n` +
+    `Skip = any type.` +
     `${setSelectedText(session.jobTypes)}`;
   const kb = toggleGrid(JOB_TYPE_PRESETS, session.jobTypes, "wiz:jt", 3);
   addNavButtons(kb, "jobTypes");
@@ -115,7 +138,8 @@ function renderJobTypesStep(session: WizardSession): { text: string; kb: InlineK
 function renderWorkFormatStep(session: WizardSession): { text: string; kb: InlineKeyboard } {
   const text =
     `${stepLabel("workFormat")}\n\n` +
-    `How do you want to work?` +
+    `How do you want to work?\n` +
+    `Skip = any format.` +
     `${setSelectedText(session.workArrangement)}`;
   const kb = toggleGrid(WORK_FORMAT_PRESETS, session.workArrangement, "wiz:wf", 3);
   addNavButtons(kb, "workFormat");
@@ -199,7 +223,7 @@ function renderLanguagesStep(session: WizardSession): { text: string; kb: Inline
 function renderExcludesStep(session: WizardSession): { text: string; kb: InlineKeyboard } {
   const text =
     `${stepLabel("excludes")}\n\n` +
-    `Anything to avoid?\n` +
+    `Industries or technologies to avoid?\n` +
     `Tap or type your own.` +
     `${setSelectedText(session.excludeKeywords)}`;
   const kb = toggleGrid(EXCLUDE_PRESETS, session.excludeKeywords, "wiz:excl", 3);
@@ -210,6 +234,7 @@ function renderExcludesStep(session: WizardSession): { text: string; kb: InlineK
 const STEP_RENDERERS: Record<string, StepRenderer> = {
   roles: renderRolesStep,
   technologies: renderTechnologiesStep,
+  primaryStack: renderPrimaryStackStep,
   seniority: renderSeniorityStep,
   jobTypes: renderJobTypesStep,
   workFormat: renderWorkFormatStep,
@@ -240,6 +265,7 @@ async function finishWizard(ctx: Context, session: WizardSession): Promise<void>
   const s = loadSettings(chatId) ?? createDefaultSettings(chatId);
 
   s.keywords = session.technologies.slice(0, WIZARD.MAX_ARRAY_ITEMS);
+  s.primaryStack = [...session.primaryStack].slice(0, 3);
   s.roles = [...session.roles].slice(0, WIZARD.MAX_ARRAY_ITEMS);
   s.seniority = [...session.seniority].slice(0, WIZARD.MAX_ARRAY_ITEMS);
   s.jobTypes = [...session.jobTypes].slice(0, WIZARD.MAX_ARRAY_ITEMS);
@@ -344,7 +370,7 @@ wizardCallbacks.callbackQuery(/^wiz:/, async (ctx) => {
   }
 
   // set based toggles (roles, seniority, jobTypes, locations, excludes)
-  const toggleMatch = data.match(/^wiz:(role|sen|jt|wf|loc|lang|excl):(.+)$/);
+  const toggleMatch = data.match(/^wiz:(role|prim|sen|jt|wf|loc|lang|excl):(.+)$/);
   if (toggleMatch) {
     const field = WIZ_TOGGLE[toggleMatch[1]!];
     if (!field) return;

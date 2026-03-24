@@ -6,6 +6,7 @@ const SettingsRowSchema = z.object({
   chat_id: z.string(),
   roles: z.string().default("[]"),
   keywords: z.string().default("[]"),
+  primary_stack: z.string().default("[]"),
   exclude_keywords: z.string().default("[]"),
   locations: z.string().default("[]"),
   seniority: z.string().default("[]"),
@@ -33,6 +34,7 @@ export interface UserSettings {
   chatId: string;
   roles: string[];
   keywords: string[];
+  primaryStack: string[];
   excludeKeywords: string[];
   locations: string[];
   seniority: string[];
@@ -52,6 +54,7 @@ export function createDefaultSettings(chatId: string): UserSettings {
     chatId,
     roles: [],
     keywords: [],
+    primaryStack: [],
     excludeKeywords: [],
     locations: [],
     seniority: [],
@@ -76,12 +79,12 @@ const sql = {
   getAll: db.prepare(`SELECT * FROM settings`),
   getOnboarded: db.prepare(`SELECT * FROM settings WHERE keywords != '[]' OR roles != '[]'`),
   upsert: db.prepare(`
-    INSERT INTO settings (chat_id, roles, keywords, exclude_keywords, locations, seniority, job_types,
+    INSERT INTO settings (chat_id, roles, keywords, primary_stack, exclude_keywords, locations, seniority, job_types,
       work_arrangement, accepted_languages, enabled_sources, min_salary_usd, check_interval_minutes, max_job_age_days, paused, jobs_sent)
-    VALUES (@chat_id, @roles, @keywords, @exclude_keywords, @locations, @seniority, @job_types,
+    VALUES (@chat_id, @roles, @keywords, @primary_stack, @exclude_keywords, @locations, @seniority, @job_types,
       @work_arrangement, @accepted_languages, @enabled_sources, @min_salary_usd, @check_interval_minutes, @max_job_age_days, @paused, 0)
     ON CONFLICT(chat_id) DO UPDATE SET
-      roles = @roles, keywords = @keywords, exclude_keywords = @exclude_keywords,
+      roles = @roles, keywords = @keywords, primary_stack = @primary_stack, exclude_keywords = @exclude_keywords,
       locations = @locations, seniority = @seniority, job_types = @job_types,
       work_arrangement = @work_arrangement, accepted_languages = @accepted_languages, enabled_sources = @enabled_sources,
       min_salary_usd = @min_salary_usd, check_interval_minutes = @check_interval_minutes,
@@ -96,6 +99,7 @@ function rowToSettings(row: z.infer<typeof SettingsRowSchema>): UserSettings {
     chatId: row.chat_id,
     roles: jsonArray(row.roles),
     keywords: jsonArray(row.keywords),
+    primaryStack: jsonArray(row.primary_stack),
     excludeKeywords: jsonArray(row.exclude_keywords),
     locations: jsonArray(row.locations),
     seniority: jsonArray(row.seniority),
@@ -140,6 +144,7 @@ export function saveSettings(settings: UserSettings): void {
     chat_id: settings.chatId,
     roles: JSON.stringify(settings.roles),
     keywords: JSON.stringify(settings.keywords),
+    primary_stack: JSON.stringify(settings.primaryStack),
     exclude_keywords: JSON.stringify(settings.excludeKeywords),
     locations: JSON.stringify(settings.locations),
     seniority: JSON.stringify(settings.seniority),

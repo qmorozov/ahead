@@ -24,6 +24,7 @@ const migrations: string[] = [
     chat_id TEXT PRIMARY KEY,
     roles TEXT NOT NULL DEFAULT '[]',
     keywords TEXT NOT NULL DEFAULT '[]',
+    primary_stack TEXT NOT NULL DEFAULT '[]',
     exclude_keywords TEXT NOT NULL DEFAULT '[]',
     locations TEXT NOT NULL DEFAULT '[]',
     seniority TEXT NOT NULL DEFAULT '[]',

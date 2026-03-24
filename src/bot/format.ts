@@ -17,6 +17,7 @@ export function formatSettings(settings: UserSettings): string {
     `Status \u00b7 ${settings.paused ? "paused" : "active"}`,
     `Roles \u00b7 ${fmt(settings.roles, "-")}`,
     `Technologies \u00b7 ${fmt(settings.keywords, "-")}`,
+    `Core stack \u00b7 ${fmt(settings.primaryStack, "all equal")}`,
     `Exclude \u00b7 ${fmt(settings.excludeKeywords, "-")}`,
     `Work format \u00b7 ${fmt(settings.workArrangement, "any")}`,
     `Locations \u00b7 ${fmt(settings.locations, "any")}`,

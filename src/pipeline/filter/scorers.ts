@@ -399,3 +399,18 @@ export function scoreFeedback({ ctx, analysis }: ScorerInput): ScorerResult {
   if (score > 0) signals.push("preferred by feedback");
   return { score, signals };
 }
+
+const PRIMARY_MISS_BY_SIZE = [-15, -20, -25];
+
+export function scorePrimaryStack({ job, ctx, analysis }: ScorerInput): ScorerResult {
+  if (ctx.primaryStackSet.size === 0) return { score: 0, signals: [] };
+
+  const normalized = [
+    ...analysis.effectiveTags.map(normalizeTag),
+    ...job.title.toLowerCase().split(/[\s,|·•–—/()[\]{}]+/).map(normalizeTag).filter(Boolean),
+  ];
+  if (normalized.some((t) => ctx.primaryStackSet.has(t))) return { score: 0, signals: [] };
+
+  const penalty = PRIMARY_MISS_BY_SIZE[Math.min(ctx.primaryStackSet.size, 3) - 1] ?? -25;
+  return { score: penalty, signals: ["no core tech"] };
+}

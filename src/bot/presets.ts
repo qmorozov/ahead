@@ -5,6 +5,7 @@ export type WizardStep =
   | "welcome"
   | "roles"
   | "technologies"
+  | "primaryStack"
   | "seniority"
   | "jobTypes"
   | "workFormat"
@@ -19,7 +20,8 @@ export interface WizardSession {
   chatId: string;
   createdAt: number;
   roles: Set<string>;
-  technologies: string[]; // ordered first N are primary
+  technologies: string[];
+  primaryStack: Set<string>;
   seniority: Set<string>;
   jobTypes: Set<string>;
   workArrangement: Set<string>;
@@ -31,6 +33,7 @@ export interface WizardSession {
 
 export type ToggleField =
   | "roles"
+  | "primaryStack"
   | "seniority"
   | "jobTypes"
   | "locations"
@@ -206,7 +209,8 @@ export { JOB_TYPE_PRESETS };
 
 export const STEP_FLOW: Record<string, WizardStep | "finish"> = {
   roles: "technologies",
-  technologies: "seniority",
+  technologies: "primaryStack",
+  primaryStack: "seniority",
   seniority: "jobTypes",
   jobTypes: "workFormat",
   workFormat: "locations",
@@ -218,7 +222,8 @@ export const STEP_FLOW: Record<string, WizardStep | "finish"> = {
 
 export const STEP_BACK: Record<string, WizardStep> = {
   technologies: "roles",
-  seniority: "technologies",
+  primaryStack: "technologies",
+  seniority: "primaryStack",
   jobTypes: "seniority",
   workFormat: "jobTypes",
   locations: "workFormat",
@@ -231,6 +236,7 @@ export const TOTAL_STEPS = Object.keys(STEP_FLOW).length;
 
 export const WIZ_TOGGLE: Record<string, ToggleFieldOrWA> = {
   role: "roles",
+  prim: "primaryStack",
   sen: "seniority",
   jt: "jobTypes",
   wf: "workArrangement",
@@ -242,13 +248,14 @@ export const WIZ_TOGGLE: Record<string, ToggleFieldOrWA> = {
 export const STEP_LABELS: Record<string, string> = {
   roles: `Step 1 of ${TOTAL_STEPS} \u00b7 Roles`,
   technologies: `Step 2 of ${TOTAL_STEPS} \u00b7 Technologies`,
-  seniority: `Step 3 of ${TOTAL_STEPS} \u00b7 Level`,
-  jobTypes: `Step 4 of ${TOTAL_STEPS} \u00b7 Job Type`,
-  workFormat: `Step 5 of ${TOTAL_STEPS} \u00b7 Work Format`,
-  locations: `Step 6 of ${TOTAL_STEPS} \u00b7 Location`,
-  salary: `Step 7 of ${TOTAL_STEPS} \u00b7 Min Salary`,
-  languages: `Step 8 of ${TOTAL_STEPS} \u00b7 Languages`,
-  excludes: `Step 9 of ${TOTAL_STEPS} \u00b7 Exclude`,
+  primaryStack: `Step 3 of ${TOTAL_STEPS} \u00b7 Core Stack`,
+  seniority: `Step 4 of ${TOTAL_STEPS} \u00b7 Level`,
+  jobTypes: `Step 5 of ${TOTAL_STEPS} \u00b7 Job Type`,
+  workFormat: `Step 6 of ${TOTAL_STEPS} \u00b7 Work Format`,
+  locations: `Step 7 of ${TOTAL_STEPS} \u00b7 Location`,
+  salary: `Step 8 of ${TOTAL_STEPS} \u00b7 Min Salary`,
+  languages: `Step 9 of ${TOTAL_STEPS} \u00b7 Languages`,
+  excludes: `Step 10 of ${TOTAL_STEPS} \u00b7 Exclude`,
 };
 
 const NORTH_AMERICA_RE = /usa|united states|america|canada/;

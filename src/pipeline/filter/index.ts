@@ -29,6 +29,7 @@ import {
   scoreExcludeKeywords,
   scoreJobQuality,
   scoreFeedback,
+  scorePrimaryStack,
 } from "./scorers";
 
 export interface ScoringContext {
@@ -45,6 +46,7 @@ export interface ScoringContext {
   workArrangement: string[];
   expandedLocations: string[];
   acceptedLanguages: Set<string>;
+  primaryStackSet: Set<string>;
   avoidedTags: Set<string>;
   preferredTags: Set<string>;
 }
@@ -76,7 +78,8 @@ export type ScorerName =
   | "salary"
   | "excludeKeywords"
   | "jobQuality"
-  | "feedback";
+  | "feedback"
+  | "primaryStack";
 
 export interface ScoreResult {
   score: number;
@@ -109,6 +112,7 @@ const MAX_CTX_CACHE = 500;
 function settingsHash(settings: UserSettings): string {
   return [
     settings.keywords.join(","),
+    settings.primaryStack.join(","),
     settings.roles.join(","),
     settings.excludeKeywords.join(","),
     settings.seniority.join(","),
@@ -150,6 +154,7 @@ export function buildScoringContext(settings: UserSettings): ScoringContext {
     workArrangement: settings.workArrangement,
     expandedLocations: expandLocations(settings.locations),
     acceptedLanguages: new Set(settings.acceptedLanguages.map((l) => l.toLowerCase())),
+    primaryStackSet: buildTagSet(settings.primaryStack),
     avoidedTags: new Set<string>(),
     preferredTags: new Set<string>(),
   };
@@ -201,6 +206,7 @@ const scorers: Array<[ScorerName, Scorer]> = [
   ["excludeKeywords", scoreExcludeKeywords],
   ["jobQuality", scoreJobQuality],
   ["feedback", scoreFeedback],
+  ["primaryStack", scorePrimaryStack],
 ];
 
 export function computeThreshold(ctx: ScoringContext): number {
