@@ -68,8 +68,7 @@ function recordParse(): void {
 // Salary/location/work-arrangement regex — runs on full text before LLM truncation
 const SALARY_RANGE_RE =
   /[$€£]\s*[\d,.]+k?(?:\s*\/\s*(?:hr|hour|mo(?:nth)?|yr|year))?\s*[-–]\s*[$€£]?\s*[\d,.]+k?(?:\s*(?:per|\/)\s*(?:year|annum|yr|month|hr|hour))?/i;
-const SALARY_LABEL_RE =
-  /(?:salary|compensation|base|total comp)[:\s]+([^\n.]{5,80})/i;
+const SALARY_LABEL_RE = /(?:salary|compensation|base|total comp)[:\s]+([^\n.]{5,80})/i;
 const LOCATION_RESTRICTION_RE =
   /(?:must be (?:based|located) in|only open to|restricted to|available (?:in|to)|candidates? (?:in|from))\s+([^.;\n]{3,60})/i;
 const WORK_ARRANGEMENT_RE = /\b(fully remote|remote[- ]first|hybrid|on[- ]?site|in[- ]?office)\b/i;
@@ -318,6 +317,11 @@ export async function parseJobDescription(
   if (!description || description.trim().length < MIN_DESCRIPTION_LENGTH) {
     debug(`LLM skip [${jobKey}]: description too short`);
     return null;
+  }
+  // short descriptions lack structured sections, quickTag extracts tags better
+  if (description.trim().length < LLM.MIN_FULL_PARSE_LENGTH) {
+    debug(`LLM quickTag [${jobKey}]: description too short for full parse`);
+    return quickTagJob(jobKey, description);
   }
   if (!providers.some((p) => p.isAvailable())) {
     debug(`LLM skip [${jobKey}]: no provider available`);

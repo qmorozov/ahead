@@ -69,6 +69,7 @@ export const LLM = {
   CLASSIFY_BATCH_SIZE: 15, // count - jobs per LLM classify call
   MAX_PARSE_ATTEMPTS: 2, // count - retry LLM parse on validation failure
   MIN_DESCRIPTION_LENGTH: 50, // chars - skip LLM if description is shorter
+  MIN_FULL_PARSE_LENGTH: 500, // chars - below this use quickTag instead of full parse
   PARSE_CONCURRENCY: 3, // count - parallel LLM parse workers (p-throttle on providers prevents burst)
 } as const;
 
