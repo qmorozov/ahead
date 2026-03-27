@@ -25,6 +25,7 @@ interface ATSBoardConfig {
   boardsPerCycle: number;
   buildUrl: (slug: string) => string;
   requestParams?: Record<string, string>;
+  postBody?: unknown;
   parseJobs: (data: unknown, slug: string) => Job[];
   accept429?: boolean;
   timeoutMs?: number;
@@ -84,17 +85,28 @@ export function createATSBoardFetcher(config: ATSBoardConfig): () => Promise<Job
     const headers: Record<string, string> = {};
     if (etag) headers["If-None-Match"] = etag;
 
+    const url = config.buildUrl(slug);
+    const validate = (s: number) =>
+      s === 200 || s === 304 || (config.accept429 === true && s === 429);
+
     const {
       data,
       status,
       headers: resHeaders,
-    } = await axios.get(config.buildUrl(slug), {
-      params: config.requestParams,
-      timeout: config.timeoutMs ?? 5000,
-      headers,
-      httpsAgent: keepAliveAgent,
-      validateStatus: (s) => s === 200 || s === 304 || (config.accept429 === true && s === 429),
-    });
+    } = config.postBody
+      ? await axios.post(url, config.postBody, {
+          timeout: config.timeoutMs ?? 5000,
+          headers,
+          httpsAgent: keepAliveAgent,
+          validateStatus: validate,
+        })
+      : await axios.get(url, {
+          params: config.requestParams,
+          timeout: config.timeoutMs ?? 5000,
+          headers,
+          httpsAgent: keepAliveAgent,
+          validateStatus: validate,
+        });
 
     if (status === 429) throw new Error("429 Rate Limited");
     if (status === 304) return { jobs: [], notModified: true };
@@ -155,7 +167,7 @@ export function createATSBoardFetcher(config: ATSBoardConfig): () => Promise<Job
       return;
     }
 
-    if (status === 404) {
+    if (status === 404 || status === 422 || status === 403) {
       stats.dead404++;
       updateBoard(slug, config.platform, false, 0);
       jobsBySlug.delete(slug);
