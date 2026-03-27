@@ -29,6 +29,7 @@ const SENIORITY_ALIASES: Readonly<Record<string, string>> = {
   "semi-senior": "Middle",
   "entry level": "Junior",
   "entry-level": "Junior",
+  entry_level: "Junior",
   associate: "Junior",
   "new grad": "Junior",
   graduate: "Junior",
@@ -40,7 +41,10 @@ const SENIORITY_ALIASES: Readonly<Record<string, string>> = {
   "software engineer ii": "Middle",
   "sde iii": "Senior",
   "software engineer iii": "Senior",
+  mid_senior_level: "Middle",
   principal: "Staff",
+  executive: "Manager",
+  director: "Lead",
   sr: "Senior",
   "sr.": "Senior",
 };

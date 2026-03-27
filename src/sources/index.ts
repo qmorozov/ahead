@@ -19,6 +19,7 @@ import { fetchAdzuna } from "./adzuna";
 import { fetchGreenhouse } from "./greenhouse";
 import { fetchLever } from "./lever";
 import { fetchAshby } from "./ashby";
+import { fetchSmartRecruiters } from "./smartrecruiters";
 
 export interface JobSource {
   readonly name: string;
@@ -41,6 +42,7 @@ export const sources: readonly JobSource[] = [
   { name: "Greenhouse", fetch: fetchGreenhouse },
   { name: "Lever", fetch: fetchLever },
   { name: "Ashby", fetch: fetchAshby },
+  { name: "SmartRecruiters", fetch: fetchSmartRecruiters },
 ];
 
 const disabledUntil = new Map<string, number>();

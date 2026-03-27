@@ -2,7 +2,7 @@
 
 Telegram bot that monitors remote job boards and sends personalized job alerts.
 
-Aggregates from 15 sources (RemoteOK, Remotive, Jobicy, Himalayas, Arbeitnow, WeWorkRemotely, Djinni, TheMuse, WorkingNomads, RemoteFirstJobs, HN, Adzuna, Greenhouse, Lever, Ashby), scores each job against your profile, and sends a ranked digest.
+Aggregates from 16 sources (RemoteOK, Remotive, Jobicy, Himalayas, Arbeitnow, WeWorkRemotely, Djinni, TheMuse, WorkingNomads, RemoteFirstJobs, HN, Adzuna, Greenhouse, Lever, Ashby, SmartRecruiters), scores each job against your profile, and sends a ranked digest.
 
 Uses Groq, Cerebras, Gemini, and OpenRouter (Llama 3.1 8B) to extract structured data from descriptions. Providers cascade automatically — when one hits its quota, the next takes over. Free providers are tried first; OpenRouter (paid, prepaid) is the final fallback. Falls back to keyword matching when all providers are unavailable.
 
@@ -25,7 +25,7 @@ Production: `npm start`
 ## How it works
 
 ```
-15 sources → keyword/location/salary/age pre-filter
+16 sources → keyword/location/salary/age pre-filter
   → LLM batch classification (skip for small batches)
   → regex pre-parse (salary, location, work arrangement from full text)
   → LLM structured parsing (smart truncation, cached)

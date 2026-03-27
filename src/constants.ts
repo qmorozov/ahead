@@ -47,7 +47,7 @@ export const FRESHNESS = {
 
 export const HIGH_QUALITY_SOURCES = new Set(["Greenhouse", "Lever", "HN"]);
 
-export const ATS_SOURCES = new Set(["Greenhouse", "Lever", "Ashby"]);
+export const ATS_SOURCES = new Set(["Greenhouse", "Lever", "Ashby", "SmartRecruiters"]);
 
 export const POLLING = {
   MAX_PER_COMPANY: 3, // count - max jobs sent per company per cycle
