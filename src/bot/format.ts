@@ -49,9 +49,9 @@ function isSafeUrl(url: string): boolean {
   }
 }
 
-function timeAgo(dateStr: string): string {
+function timeAgo(date: string | number): string {
   const now = Date.now();
-  const posted = new Date(dateStr).getTime();
+  const posted = typeof date === "number" ? date : new Date(date).getTime();
   if (isNaN(posted)) return "";
 
   const diffMs = now - posted;
@@ -155,7 +155,8 @@ export function formatMessage(job: Job, parsed: ParsedJob | null): string {
   const level = parsed?.seniority || job.seniority || detectSeniority(job.title);
   const salary = parsed?.salary || job.salary;
   const tags = techTags(job, parsed, 5);
-  const ago = timeAgo(job.publishedAt);
+  const ago = timeAgo(job.discoveredAt ?? job.publishedAt);
+  const agoLabel = job.discoveredAt ? "Found" : "Posted";
 
   const titleUrl = isSafeUrl(job.url) ? escapeHtml(job.url) : "";
   const lines = [
@@ -169,7 +170,7 @@ export function formatMessage(job: Job, parsed: ParsedJob | null): string {
     tags.length > 0 && `<b>Stack:</b> ${escapeHtml(tags.join(", "))}`,
   ];
   const headerText = lines.filter(Boolean).join("\n");
-  const footer = ago ? `\n\n⚡ Posted ${ago}` : "";
+  const footer = ago ? `\n\n⚡ ${agoLabel} ${ago}` : "";
 
   const descBudget = DELIVERY.MAX_LENGTH - headerText.length - footer.length - "\n\n".length;
   if (descBudget <= 200) return headerText + footer;

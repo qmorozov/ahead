@@ -27,6 +27,8 @@ export const PENALTY = {
   FOREIGN_LANGUAGE: -15, // points - description detected as non-English
   FOREIGN_TECH: -10, // points - specialist tech in title user doesn't know (per occurrence)
   RELOCATION: -15, // points - description requires relocation
+  TALENT_POOL: -10, // points - description suggests talent pipeline, not real opening
+  STALE_LISTING: -5, // points - job discovered 60+ days ago and still listed
 } as const;
 
 export const STACK = {
@@ -45,6 +47,8 @@ export const FRESHNESS = {
 
 export const HIGH_QUALITY_SOURCES = new Set(["Greenhouse", "Lever", "HN"]);
 
+export const ATS_SOURCES = new Set(["Greenhouse", "Lever", "Ashby"]);
+
 export const POLLING = {
   MAX_PER_COMPANY: 3, // count - max jobs sent per company per cycle
   SOURCE_CACHE_TTL_MS: 2 * 60 * 1000, // ms - reuse fetched sources within this window
@@ -55,7 +59,7 @@ export const POLLING = {
   MAX_DEFER_CYCLES: 3, // count - max cycles to defer unparsed irrelevant jobs before discarding
   DEFER_TTL_MS: 24 * 60 * 60 * 1000, // ms - deferred jobs expire after 24h
   USER_CONCURRENCY: 3, // count - max users processed in parallel per poll cycle
-  PER_USER_TIMEOUT_MS: 300_000, // ms - timeout per user in a poll cycle (5min)
+  PER_USER_TIMEOUT_MS: 600_000, // ms - timeout per user in a poll cycle (10min)
 } as const;
 
 export const LLM = {
@@ -65,7 +69,7 @@ export const LLM = {
   CLASSIFY_BATCH_SIZE: 15, // count - jobs per LLM classify call
   MAX_PARSE_ATTEMPTS: 2, // count - retry LLM parse on validation failure
   MIN_DESCRIPTION_LENGTH: 50, // chars - skip LLM if description is shorter
-  PARSE_CONCURRENCY: 3, // count - parallel LLM parse workers
+  PARSE_CONCURRENCY: 3, // count - parallel LLM parse workers (p-throttle on providers prevents burst)
 } as const;
 
 export const WIZARD = {
@@ -78,6 +82,11 @@ export const WIZARD = {
 export const FEEDBACK = {
   AVOID_PENALTY: -5, // points - penalty per avoided tag found in job
   PREFER_BONUS: 3, // points - bonus per preferred tag found in job
+} as const;
+
+export const DISCOVERY = {
+  PRUNE_DAYS: 60, // days - remove discovery records older than this
+  STALE_DAYS: 60, // days - job discovered this long ago gets ghost job penalty
 } as const;
 
 export const DELIVERY = {

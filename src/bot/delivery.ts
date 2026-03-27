@@ -167,7 +167,8 @@ function buildDigestPage(
   let text = renderText();
   while (items.length > 1 && text.length > DELIVERY.MAX_LENGTH) {
     items.pop();
-    entries.pop();
+    const removed = entries.pop();
+    if (removed) pendingJobs.delete(removed.id);
     flatButtons.pop();
     text = renderText();
   }

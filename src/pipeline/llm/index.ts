@@ -10,10 +10,12 @@ import {
 import { hasContent, ParsedJob, ParsedJobSchema } from "../../types";
 import { log, debug } from "../../lib/logger";
 import { stripHtml } from "../../lib/utils";
+import { extractSalaryUsd } from "../../lib/salary";
 import { normalizeSeniority } from "../../lib/seniority";
 import { LLM } from "../../constants";
 import type { LLMProvider, CallOptions, ModelTier } from "./types";
 import { createGroqProvider } from "./groq";
+import { createOpenRouterProvider } from "./openrouter";
 import { createCerebrasProvider } from "./cerebras";
 import { createGeminiProvider } from "./gemini";
 import { PARSE_PROMPT, QUICK_TAG_PROMPT, CLASSIFY_PROMPT } from "./prompts";
@@ -22,6 +24,7 @@ const providers: LLMProvider[] = [
   config.groqApiKey ? createGroqProvider(config.groqApiKey) : null,
   config.cerebrasApiKey ? createCerebrasProvider(config.cerebrasApiKey) : null,
   config.geminiApiKey ? createGeminiProvider(config.geminiApiKey) : null,
+  config.openrouterApiKey ? createOpenRouterProvider(config.openrouterApiKey) : null,
 ].filter((p): p is LLMProvider => p !== null);
 
 async function callLLM(
@@ -38,17 +41,16 @@ async function callLLM(
   return null;
 }
 
-// Hourly parse budget - shared across all providers to prevent 429 storms
 const HOUR_MS = 3_600_000;
 
-// DB persists for restart recovery; in-memory count is authoritative at runtime
+// In-memory count is authoritative; DB is for restart recovery
 pruneParseTimestamps(Date.now() - HOUR_MS);
 let parseCount = countRecentParses(Date.now() - HOUR_MS);
 let lastPruneAt = Date.now();
 
 function isParseAvailable(): boolean {
   if (providers.length === 0) return false;
-  // Re-sync from DB at most once per minute to account for expired timestamps
+  // Re-sync from DB at most once per minute
   const now = Date.now();
   if (now - lastPruneAt > 60_000) {
     pruneParseTimestamps(now - HOUR_MS);
@@ -63,24 +65,85 @@ function recordParse(): void {
   recordParseTimestamp(Date.now());
 }
 
-// Strip HTML, truncate to budget, wrap in XML tags for prompt injection defense
-function prepareDescription(description: string): string {
-  let text = stripHtml(description);
-  if (text.length > LLM.MAX_INPUT_CHARS) {
-    const slice = text.substring(0, LLM.MAX_INPUT_CHARS);
-    const lastBreak = Math.max(
-      slice.lastIndexOf(". "),
-      slice.lastIndexOf(".\n"),
-      slice.lastIndexOf("\n\n"),
-      slice.lastIndexOf("\n"),
-    );
-    text =
-      slice.substring(
-        0,
-        lastBreak > LLM.MAX_INPUT_CHARS * 0.7 ? lastBreak + 1 : LLM.MAX_INPUT_CHARS,
-      ) + "...";
+// Salary/location/work-arrangement regex — runs on full text before LLM truncation
+const SALARY_RANGE_RE =
+  /[$€£]\s*[\d,.]+k?(?:\s*\/\s*(?:hr|hour|mo(?:nth)?|yr|year))?\s*[-–]\s*[$€£]?\s*[\d,.]+k?(?:\s*(?:per|\/)\s*(?:year|annum|yr|month|hr|hour))?/i;
+const SALARY_LABEL_RE =
+  /(?:salary|compensation|base|total comp)[:\s]+([^\n.]{5,80})/i;
+const LOCATION_RESTRICTION_RE =
+  /(?:must be (?:based|located) in|only open to|restricted to|available (?:in|to)|candidates? (?:in|from))\s+([^.;\n]{3,60})/i;
+const WORK_ARRANGEMENT_RE = /\b(fully remote|remote[- ]first|hybrid|on[- ]?site|in[- ]?office)\b/i;
+
+interface PreParseResult {
+  salary: string | null;
+  locationRestriction: string | null;
+  workArrangement: string | null;
+}
+
+function preParseFullText(text: string): PreParseResult {
+  const rangeMatch = text.match(SALARY_RANGE_RE);
+  const labelMatch = text.match(SALARY_LABEL_RE);
+  const salaryRaw = rangeMatch?.[0] ?? labelMatch?.[1] ?? null;
+  const salary = salaryRaw && extractSalaryUsd(salaryRaw) ? salaryRaw.trim() : null;
+
+  const locationMatch = text.match(LOCATION_RESTRICTION_RE);
+  const workMatch = text.match(WORK_ARRANGEMENT_RE);
+
+  return {
+    salary,
+    locationRestriction: locationMatch ? locationMatch[1]!.trim() : null,
+    workArrangement: workMatch ? workMatch[1]!.toLowerCase().replace(/\s+/g, " ") : null,
+  };
+}
+
+const SECTION_KEYWORDS =
+  /(?:requirements?|qualifications?|responsibilit|nice[- ]to[- ]have|what (?:you|we).(?:ll|re)|tech(?:nical)?\s*stack|skills?\s*(?:required|needed)|benefits?|perks?|compensation|key\s*(?:skills|qualif))/i;
+
+function smartTruncate(text: string, budget: number): string {
+  if (text.length <= budget) return text;
+
+  const lines = text.split("\n");
+  const intro: string[] = [];
+  const sections: string[] = [];
+  let inSection = false;
+  let sectionChars = 0;
+  const sectionBudget = Math.floor(budget * 0.6);
+
+  for (const line of lines) {
+    if (!inSection && SECTION_KEYWORDS.test(line)) inSection = true;
+
+    if (!inSection) {
+      intro.push(line);
+    } else if (sectionChars + line.length < sectionBudget) {
+      sections.push(line);
+      sectionChars += line.length + 1;
+    }
   }
-  return `<job_description>\n${text}\n</job_description>`;
+
+  if (sections.length === 0) {
+    const head = Math.floor(budget * 0.7);
+    const tail = budget - head - 5; // 5 = "\n...\n".length
+    const headText = text.substring(0, head);
+    const tailText = text.substring(text.length - tail);
+    return headText + "\n...\n" + tailText;
+  }
+
+  const introBudget = budget - sectionChars;
+  let introText = intro.join("\n");
+  if (introText.length > introBudget) {
+    introText = introText.substring(0, introBudget);
+    const lastBreak = Math.max(introText.lastIndexOf(". "), introText.lastIndexOf("\n"));
+    if (lastBreak > introBudget * 0.5) introText = introText.substring(0, lastBreak + 1);
+    introText += "...";
+  }
+
+  return (introText + "\n" + sections.join("\n")).substring(0, budget);
+}
+
+function prepareDescription(description: string): string {
+  const text = stripHtml(description);
+  const truncated = smartTruncate(text, LLM.MAX_INPUT_CHARS);
+  return `<job_description>\n${truncated}\n</job_description>`;
 }
 
 const EMPTY_PARSED: ParsedJob = {
@@ -163,12 +226,13 @@ export interface ClassifyInput {
   tags: string[];
 }
 
-// fail-open all jobs pass through if LLM is unavailable
+// Fail-open: all jobs pass through if LLM is unavailable
 export async function classifyBatch(
   jobs: ClassifyInput[],
   userProfile: string,
 ): Promise<Set<number>> {
-  if (providers.length === 0) return new Set(jobs.map((j) => j.index));
+  if (providers.length === 0 || jobs.length <= LLM.CLASSIFY_BATCH_SIZE)
+    return new Set(jobs.map((j) => j.index));
 
   const relevant = new Set<number>();
   let consecutiveFailures = 0;
@@ -218,8 +282,9 @@ async function classifySingleBatch(
     if (!raw) return null;
 
     const result = ClassifyResponseSchema.safeParse(JSON.parse(raw));
-    if (!result.success || result.data.relevant.length === 0) return null;
+    if (!result.success) return null;
 
+    // Empty relevant array = LLM says none match (valid), not a failure
     return result.data.relevant.filter((n) => n >= 1 && n <= batchSize);
   } catch (err) {
     debug(`Classify batch error: ${err instanceof Error ? err.message : String(err)}`);
@@ -227,7 +292,6 @@ async function classifySingleBatch(
   }
 }
 
-// dedup concurrent parses for the same job
 const inFlightParses = new Map<string, Promise<ParsedJob | null>>();
 const inFlightQuickTags = new Map<string, Promise<ParsedJob | null>>();
 
@@ -262,7 +326,28 @@ export async function parseJobDescription(
 
   log(`LLM parsing [${jobKey}]`);
 
-  const promise = parseWithRetry(jobKey, prepareDescription(description));
+  // Regex-extract salary/location/work-arrangement before truncation loses them
+  const fullText = stripHtml(description);
+  const preParsed = preParseFullText(fullText);
+
+  const promise = (async (): Promise<ParsedJob | null> => {
+    const result = await parseWithRetry(jobKey, prepareDescription(description));
+    if (!result) return null;
+
+    if (!result.salary && preParsed.salary) result.salary = preParsed.salary;
+    if (!result.locationRestriction && preParsed.locationRestriction)
+      result.locationRestriction = preParsed.locationRestriction;
+    if (!result.workArrangement && preParsed.workArrangement) {
+      const wa = preParsed.workArrangement;
+      if (/remote/i.test(wa)) result.workArrangement = "remote";
+      else if (/hybrid/i.test(wa)) result.workArrangement = "hybrid";
+      else if (/on.?site|in.?office/i.test(wa)) result.workArrangement = "onsite";
+    }
+
+    setCachedParse(jobKey, result);
+    return result;
+  })();
+
   inFlightParses.set(jobKey, promise);
   try {
     return await promise;
@@ -271,7 +356,7 @@ export async function parseJobDescription(
   }
 }
 
-async function parseWithRetry(jobKey: string, prepared: string): Promise<ParsedJob> {
+async function parseWithRetry(jobKey: string, prepared: string): Promise<ParsedJob | null> {
   let lastError: string | null = null;
   let counted = false;
 
@@ -290,14 +375,13 @@ async function parseWithRetry(jobKey: string, prepared: string): Promise<ParsedJ
     const { parsed, error } = tryParseLLMOutput(raw);
 
     if (parsed && hasContent(parsed)) {
-      setCachedParse(jobKey, parsed);
       log(`LLM parsed [${jobKey}]: ${parsed.primaryTags.join(", ")}`);
       return parsed;
     }
 
     if (!error || !raw) {
       log(`LLM empty result [${jobKey}]`);
-      return parsed ?? { ...EMPTY_PARSED };
+      return null;
     }
 
     lastError = error;
@@ -305,12 +389,12 @@ async function parseWithRetry(jobKey: string, prepared: string): Promise<ParsedJ
   }
 
   log(`LLM parse failed after ${MAX_PARSE_ATTEMPTS} attempts [${jobKey}]`);
-  return { ...EMPTY_PARSED };
+  return null;
 }
 
 export async function quickTagJob(jobKey: string, description: string): Promise<ParsedJob | null> {
   const cached = getCachedParse(jobKey);
-  if (cached && cached.parsed.requirements.length > 0) return cached.parsed;
+  if (cached) return cached.parsed;
   if (!description || description.trim().length < MIN_DESCRIPTION_LENGTH) return null;
 
   const existing = inFlightQuickTags.get(jobKey);

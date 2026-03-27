@@ -1,39 +1,33 @@
 import axios from "axios";
 import pRetry, { AbortError } from "p-retry";
-import pThrottle from "p-throttle";
 import { log, logError } from "../../lib/logger";
 import { errorMessage } from "../../lib/utils";
 import { ChatCompletionSchema, type LLMProvider, type ModelTier, type CallOptions } from "./types";
 
-const API_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+const API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 const MODELS: Record<ModelTier, string> = {
-  light: "gemini-2.5-flash-lite-preview-06-17",
-  heavy: "gemini-2.5-flash-preview-05-20",
+  light: "meta-llama/llama-3.1-8b-instruct",
+  heavy: "meta-llama/llama-3.1-8b-instruct",
 };
 
-const RATE_LIMIT_BACKOFF_MS = 5 * 60_000;
 const REQUEST_TIMEOUT_MS = 60_000;
 const MAX_RETRIES = 2;
-const MIN_RETRY_MS = 3_000;
-
-// 15 req/min — shared across all concurrent users
-const throttle = pThrottle({ limit: 1, interval: 4_000 });
-
-function isRateLimitError(error: unknown): boolean {
-  return /429|rate|quota/i.test(errorMessage(error));
-}
+const MIN_RETRY_MS = 2_000;
+const INSUFFICIENT_CREDITS_BACKOFF_MS = 60 * 60_000;
 
 function isRetryable(error: unknown): boolean {
   const msg = errorMessage(error);
   return (
-    /429|rate|quota/i.test(msg) ||
-    /5\d\d/.test(msg) ||
-    /ECONNRESET|ETIMEDOUT|ECONNABORTED/i.test(msg)
+    /429|rate/i.test(msg) || /5\d\d/.test(msg) || /ECONNRESET|ETIMEDOUT|ECONNABORTED/i.test(msg)
   );
 }
 
-export function createGeminiProvider(apiKey: string): LLMProvider {
+function isOutOfCredits(error: unknown): boolean {
+  return /402|insufficient|credits/i.test(errorMessage(error));
+}
+
+export function createOpenRouterProvider(apiKey: string): LLMProvider {
   let backoffUntil = 0;
 
   async function sendRequest(
@@ -55,41 +49,44 @@ export function createGeminiProvider(apiKey: string): LLMProvider {
         ...(options?.maxTokens && { max_tokens: options.maxTokens }),
       },
       {
-        headers: { Authorization: `Bearer ${apiKey}` },
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "HTTP-Referer": "https://github.com/ahead-bot",
+          "X-OpenRouter-Title": "Ahead Job Bot",
+        },
         timeout: REQUEST_TIMEOUT_MS,
       },
     );
 
     const parsed = ChatCompletionSchema.parse(data);
-    backoffUntil = 0;
     return parsed.choices[0]?.message.content ?? null;
   }
 
   return {
-    name: "Gemini",
+    name: "OpenRouter",
 
     isAvailable: () => Date.now() >= backoffUntil,
 
     async call(tier, systemPrompt, userContent, options?: CallOptions) {
       try {
-        return await pRetry(() => throttle(() => sendRequest(tier, systemPrompt, userContent, options))(), {
+        return await pRetry(() => sendRequest(tier, systemPrompt, userContent, options), {
           retries: MAX_RETRIES,
           minTimeout: MIN_RETRY_MS,
           onFailedAttempt: (error) => {
-            if (isRateLimitError(error)) {
-              backoffUntil = Date.now() + RATE_LIMIT_BACKOFF_MS;
-              throw new AbortError("Rate limited");
+            if (isOutOfCredits(error)) {
+              backoffUntil = Date.now() + INSUFFICIENT_CREDITS_BACKOFF_MS;
+              throw new AbortError("Insufficient credits");
             }
             if (!isRetryable(error)) throw new AbortError(`Non-retryable: ${errorMessage(error)}`);
-            log(`Gemini retry ${error.attemptNumber}/${MAX_RETRIES}`);
+            log(`OpenRouter retry ${error.attemptNumber}/${MAX_RETRIES}`);
           },
         });
       } catch (err) {
-        if (err instanceof AbortError && err.message === "Rate limited") {
-          log("Gemini rate limited, pausing for 5min");
+        if (err instanceof AbortError && err.message === "Insufficient credits") {
+          log("OpenRouter out of credits, pausing for 1h");
           return null;
         }
-        logError("Gemini", err);
+        logError("OpenRouter", err);
         return null;
       }
     },

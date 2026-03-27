@@ -1,7 +1,7 @@
 import { franc } from "franc-min";
 import { SENIORITY_ORDER } from "../../lib/seniority";
 import { extractSalaryUsd } from "../../lib/salary";
-import { SCORING, PENALTY, STACK, FRESHNESS, POLLING, HIGH_QUALITY_SOURCES, FEEDBACK } from "../../constants";
+import { SCORING, PENALTY, STACK, FRESHNESS, POLLING, HIGH_QUALITY_SOURCES, FEEDBACK, DISCOVERY } from "../../constants";
 import { CANONICAL_TO_DOMAINS, ALL_KNOWN_TECHS } from "../../lib/tech-data";
 import { testKeyword, matchesAny, normalizeTag, GENERIC_TOOLS } from "./matching";
 import { ROLE_CONFIGS, GENERIC_DEV_PATTERN } from "./roles";
@@ -42,6 +42,8 @@ const STAFFING_AGENCY_RE =
   /\b(confidential|staffing|recruiting|recruitment|talent\s*(solution|acquisition|partner)|manpower|hays|robert\s*half|adecco|randstad|modis|kforce|tek\s*systems|insight\s*global)\b/i;
 
 const RELOCATE_RE = /(must|required to|willing to|open to)\s+relocat/i;
+const TALENT_POOL_RE =
+  /\b(talent\s*(community|pool|network)|always\s+looking|ongoing\s+recruitment)\b/i;
 
 // Specialist tech = belongs to 1-3 domains (react→frontend, kotlin→mobile).
 // If it's in the title and user doesn't know it, it's a strong mismatch signal.
@@ -54,8 +56,8 @@ function isSpecialistTech(tech: string): boolean {
 }
 
 export function scoreExcludedTech({ ctx, analysis }: ScorerInput): ScorerResult {
-  if (ctx.excludeTagSet.size > 0 && analysis.hasParsedTags) {
-    if (analysis.parsedTags.some((tag) => ctx.excludeTagSet.has(normalizeTag(tag)))) {
+  if (ctx.excludeTagSet.size > 0 && analysis.effectiveTags.length > 0) {
+    if (analysis.effectiveTags.some((tag) => ctx.excludeTagSet.has(normalizeTag(tag)))) {
       return { score: 0, signals: ["excluded tech"], hardReject: true };
     }
   }
@@ -287,10 +289,10 @@ export function scoreForeignTech({ ctx, analysis }: ScorerInput): ScorerResult {
 }
 
 export function scoreFreshness({ job }: ScorerInput): ScorerResult {
-  if (!job.publishedAt) return { score: 0, signals: [] };
-  const postedMs = new Date(job.publishedAt).getTime();
-  if (isNaN(postedMs)) return { score: 0, signals: [] };
-  const h = (Date.now() - postedMs) / 3_600_000;
+  // Prefer discoveredAt for ATS sources (more reliable than publishedAt)
+  const ts = job.discoveredAt ?? new Date(job.publishedAt).getTime();
+  if (isNaN(ts)) return { score: 0, signals: [] };
+  const h = (Date.now() - ts) / 3_600_000;
   if (h < 0) return { score: 0, signals: [] };
   return {
     score: Math.round(SCORING.FRESHNESS_MAX * Math.exp(-h / FRESHNESS.DECAY_HOURS)),
@@ -313,13 +315,19 @@ export function scoreExcludeKeywords({ parsed, ctx, analysis }: ScorerInput): Sc
   if (ctx.expandedExcludes.length === 0) return { score: 0, signals: [] };
 
   let score = 0;
+  let foundInParsed = false;
   if (parsed) {
-    if (parsed.requirements.some((r) => matchesAny(r, ctx.expandedExcludes)))
+    if (parsed.requirements.some((r) => matchesAny(r, ctx.expandedExcludes))) {
       score += PENALTY.EXCLUDE_REQUIREMENT;
-    if (parsed.niceToHave.some((r) => matchesAny(r, ctx.expandedExcludes)))
+      foundInParsed = true;
+    }
+    if (parsed.niceToHave.some((r) => matchesAny(r, ctx.expandedExcludes))) {
       score += PENALTY.EXCLUDE_NICE;
+      foundInParsed = true;
+    }
   }
-  if (analysis.desc && matchesAny(analysis.desc, ctx.expandedExcludes))
+  // Only check raw description if LLM didn't provide structured sections
+  if (!foundInParsed && analysis.desc && matchesAny(analysis.desc, ctx.expandedExcludes))
     score += PENALTY.EXCLUDE_DESC;
 
   return { score, signals: [] };
@@ -329,7 +337,7 @@ export function scoreJobQuality({ job, parsed, ctx, analysis }: ScorerInput): Sc
   let score = 0;
   const signals: string[] = [];
 
-  if (analysis.desc.length >= 50 && !analysis.hasParsedTags && !isTechHeavy(analysis.desc)) {
+  if (analysis.desc.length >= 50 && !isTechHeavy(analysis.desc)) {
     const lang = franc(analysis.desc, { minLength: 50 });
     if (lang !== "und") {
       const acceptedCodes = new Set(
@@ -361,6 +369,19 @@ export function scoreJobQuality({ job, parsed, ctx, analysis }: ScorerInput): Sc
   if (analysis.desc && RELOCATE_RE.test(analysis.desc)) {
     score += PENALTY.RELOCATION;
     signals.push("relocation required");
+  }
+
+  if (analysis.desc && TALENT_POOL_RE.test(analysis.desc)) {
+    score += PENALTY.TALENT_POOL;
+    signals.push("talent pool");
+  }
+
+  if (job.discoveredAt) {
+    const discoveredDaysAgo = (Date.now() - job.discoveredAt) / 86_400_000;
+    if (discoveredDaysAgo > DISCOVERY.STALE_DAYS) {
+      score += PENALTY.STALE_LISTING;
+      signals.push("long-lived listing");
+    }
   }
 
   if (
@@ -412,5 +433,5 @@ export function scorePrimaryStack({ job, ctx, analysis }: ScorerInput): ScorerRe
   if (normalized.some((t) => ctx.primaryStackSet.has(t))) return { score: 0, signals: [] };
 
   const penalty = PRIMARY_MISS_BY_SIZE[Math.min(ctx.primaryStackSet.size, 3) - 1] ?? -25;
-  return { score: penalty, signals: ["no core tech"] };
+  return { score: penalty, signals: ["no primary stack"] };
 }

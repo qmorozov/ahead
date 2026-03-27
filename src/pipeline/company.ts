@@ -1,9 +1,11 @@
 import axios from "axios";
+import { z } from "zod";
 import { CLEARBIT_TIMEOUT } from "../config";
 import { getCachedCompanyUrl, setCachedCompanyUrl } from "../db";
 import { Job } from "../types";
 
 const CLEARBIT_URL = "https://autocomplete.clearbit.com/v1/companies/suggest";
+const ClearbitSchema = z.array(z.object({ domain: z.string() })).default([]);
 
 interface LookupResult {
   url: string | null;
@@ -16,15 +18,12 @@ async function lookupCompanyUrl(name: string): Promise<LookupResult> {
       params: { query: name },
       timeout: CLEARBIT_TIMEOUT,
     });
-    if (Array.isArray(data) && data.length > 0) {
-      const domain = data[0]?.domain;
-      if (typeof domain === "string" && domain) {
-        return { url: `https://${domain}`, transientError: false };
-      }
-    }
-    return { url: null, transientError: false }; // genuinely not found
+    const companies = ClearbitSchema.safeParse(data);
+    const domain = companies.success ? companies.data[0]?.domain : undefined;
+    if (domain) return { url: `https://${domain}`, transientError: false };
+    return { url: null, transientError: false };
   } catch {
-    return { url: null, transientError: true }; // network/timeout don't cache
+    return { url: null, transientError: true };
   }
 }
 

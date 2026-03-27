@@ -15,6 +15,7 @@ export const JobSchema = z.object({
   companyUrl: z.string().optional(),
   tags: z.array(z.string()),
   publishedAt: z.string(),
+  discoveredAt: z.number().optional(),
   boardJobCount: z.number().optional(),
 });
 

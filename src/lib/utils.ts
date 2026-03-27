@@ -110,8 +110,14 @@ export function parseCommaSeparatedRaw(text: string): string[] {
 }
 
 export function stripHtml(html: string): string {
-  return decodeHTML(html.replace(/<[^>]+>/g, " "))
-    .replace(/\s+/g, " ")
+  const decoded = decodeHTML(html);
+  const raw = decoded
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/?(?:p|div|li|ul|ol|h[1-6]|tr|blockquote)(?:\s[^>]*)?>/gi, "\n")
+    .replace(/<[^>]+>/g, "");
+  return raw
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n\s*\n+/g, "\n")
     .trim();
 }
 

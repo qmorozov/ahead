@@ -1,7 +1,7 @@
 import { UserSettings, getTagPreferences, type TagPreference } from "../../db";
 import { Job, ParsedJob } from "../../types";
 import { extractSalaryUsd } from "../../lib/salary";
-import { SCORING } from "../../constants";
+import { SCORING, ATS_SOURCES } from "../../constants";
 import { EXCLUDE_EXPANSIONS } from "../../bot/presets";
 import {
   expandWithAliases,
@@ -231,7 +231,12 @@ export function loadFeedbackIntoContext(
   return prefs;
 }
 
-export function scoreJob(job: Job, parsed: ParsedJob | null, ctx: ScoringContext): ScoreResult {
+export function scoreJob(
+  job: Job,
+  parsed: ParsedJob | null,
+  ctx: ScoringContext,
+  skipHardRejects = false,
+): ScoreResult {
   const analysis = analyzeJob(job, parsed);
   const breakdown: Partial<Record<ScorerName, number>> = {};
   const signals: string[] = [];
@@ -239,11 +244,11 @@ export function scoreJob(job: Job, parsed: ParsedJob | null, ctx: ScoringContext
 
   for (const [name, scorer] of scorers) {
     const r = scorer({ job, parsed, ctx, analysis });
-    if (r.hardReject) {
+    if (r.hardReject && !skipHardRejects) {
       return { score: -1, normalized: 0, signals: r.signals, breakdown: { [name]: -1 } };
     }
-    breakdown[name] = r.score;
-    total += r.score;
+    breakdown[name] = r.hardReject ? 0 : r.score;
+    total += r.hardReject ? 0 : r.score;
     signals.push(...r.signals);
   }
 
@@ -257,6 +262,9 @@ export function filterJobs(jobs: Job[], settings: UserSettings, ctx: ScoringCont
     expandedExcludes: excludeKeywords,
     expandedLocations: locations,
   } = ctx;
+
+  const ageCutoff =
+    settings.maxJobAgeDays > 0 ? Date.now() - settings.maxJobAgeDays * 86_400_000 : 0;
 
   return jobs.filter((job) => {
     const hasExtraContent = job.tags.length > 0 || Boolean(job.description);
@@ -279,9 +287,13 @@ export function filterJobs(jobs: Job[], settings: UserSettings, ctx: ScoringCont
     if (settings.jobTypes.length > 0 && job.jobType && !settings.jobTypes.includes(job.jobType))
       return false;
 
-    if (settings.maxJobAgeDays > 0 && job.publishedAt) {
-      const cutoff = Date.now() - settings.maxJobAgeDays * 24 * 60 * 60 * 1000;
-      if (new Date(job.publishedAt).getTime() < cutoff) return false;
+    if (ageCutoff > 0 && job.publishedAt) {
+      if (ATS_SOURCES.has(job.source)) {
+        // ATS publishedAt is unreliable; use discoveredAt when available
+        if (job.discoveredAt && job.discoveredAt < ageCutoff) return false;
+      } else {
+        if (new Date(job.publishedAt).getTime() < ageCutoff) return false;
+      }
     }
 
     return true;

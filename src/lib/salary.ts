@@ -28,13 +28,11 @@ function extractNums(s: string, hasHourly: boolean, hasMonthly: boolean): number
 }
 
 const HOURS_PER_YEAR = 2080; // 40h/week * 52 weeks
-const MAX_HOURLY_RATE = 500; // above this, assume annual
 
-function computeMultiplier(hasHourly: boolean, hasMonthly: boolean, nums: number[]): number {
+function computeMultiplier(hasHourly: boolean, hasMonthly: boolean): number {
   if (hasHourly) return HOURS_PER_YEAR;
   if (hasMonthly) return 12;
-  // heuristic fallback no explicit period indicator small numbers -> likely hourly
-  if (nums.every((n) => n < MAX_HOURLY_RATE)) return HOURS_PER_YEAR;
+  // No "/hr" or "/month" → assume annual
   return 1;
 }
 
@@ -43,7 +41,7 @@ function parseSalaryRange(s: string): { min: number; max: number } | undefined {
   const hasMonthly = MONTHLY_RE.test(s);
   const nums = extractNums(s, hasHourly, hasMonthly);
   if (nums.length === 0) return undefined;
-  const multiplier = computeMultiplier(hasHourly, hasMonthly, nums);
+  const multiplier = computeMultiplier(hasHourly, hasMonthly);
   return { min: Math.min(...nums) * multiplier, max: Math.max(...nums) * multiplier };
 }
 
@@ -85,5 +83,6 @@ export function formatSalaryRange(
   currency = "USD",
 ): string | undefined {
   if (min == null || max == null) return undefined;
+  if (min === max) return `${currency} ${min.toLocaleString()}`;
   return `${currency} ${min.toLocaleString()} – ${max.toLocaleString()}`;
 }

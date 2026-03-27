@@ -29,7 +29,8 @@ function formatActivity(s: UserSettings | null, stats: ReturnType<typeof getPoll
     : `\u2705 Active \u00b7 checking every ${s?.checkIntervalMinutes ?? 30} min`;
 
   // db-persisted counters (survive restarts), unlike per-cycle stats below
-  const counters = `Sources: ${s?.enabledSources.length ?? 0} active\nTotal jobs sent: ${s?.jobsSent ?? 0}`;
+  const srcCount = s?.enabledSources.length || sources.length;
+  const counters = `Sources: ${srcCount} active\nTotal jobs sent: ${s?.jobsSent ?? 0}`;
 
   if (!stats) {
     return (s?.jobsSent ?? 0) === 0

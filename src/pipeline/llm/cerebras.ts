@@ -1,8 +1,9 @@
 import axios from "axios";
 import pRetry, { AbortError } from "p-retry";
+import pThrottle from "p-throttle";
 import { log, logError } from "../../lib/logger";
-import { errorMessage, sleep } from "../../lib/utils";
-import type { LLMProvider, ModelTier, CallOptions } from "./types";
+import { errorMessage } from "../../lib/utils";
+import { ChatCompletionSchema, type LLMProvider, type ModelTier, type CallOptions } from "./types";
 
 const API_URL = "https://api.cerebras.ai/v1/chat/completions";
 
@@ -11,15 +12,13 @@ const MODELS: Record<ModelTier, string> = {
   heavy: "qwen-3-235b-a22b-instruct-2507",
 };
 
-const MIN_CALL_GAP_MS = 2_000;
 const RATE_LIMIT_BACKOFF_MS = 5 * 60_000;
 const REQUEST_TIMEOUT_MS = 60_000;
 const MAX_RETRIES = 2;
 const MIN_RETRY_MS = 2_000;
 
-interface ChatCompletionResponse {
-  choices: Array<{ message: { content: string } }>;
-}
+// 30 req/min — shared across all concurrent users
+const throttle = pThrottle({ limit: 1, interval: 2_000 });
 
 function isRateLimitError(error: unknown): boolean {
   return /429|rate/i.test(errorMessage(error));
@@ -32,13 +31,6 @@ function isRetryable(error: unknown): boolean {
 
 export function createCerebrasProvider(apiKey: string): LLMProvider {
   let backoffUntil = 0;
-  let lastCallAt = 0;
-
-  async function throttle(): Promise<void> {
-    const elapsed = Date.now() - lastCallAt;
-    if (elapsed < MIN_CALL_GAP_MS) await sleep(MIN_CALL_GAP_MS - elapsed);
-    lastCallAt = Date.now();
-  }
 
   async function sendRequest(
     tier: ModelTier,
@@ -46,9 +38,7 @@ export function createCerebrasProvider(apiKey: string): LLMProvider {
     userContent: string,
     options?: CallOptions,
   ): Promise<string | null> {
-    await throttle();
-
-    const { data } = await axios.post<ChatCompletionResponse>(
+    const { data } = await axios.post(
       API_URL,
       {
         model: MODELS[tier],
@@ -66,8 +56,9 @@ export function createCerebrasProvider(apiKey: string): LLMProvider {
       },
     );
 
+    const parsed = ChatCompletionSchema.parse(data);
     backoffUntil = 0;
-    return data.choices[0]?.message.content ?? null;
+    return parsed.choices[0]?.message.content ?? null;
   }
 
   return {
@@ -77,7 +68,7 @@ export function createCerebrasProvider(apiKey: string): LLMProvider {
 
     async call(tier, systemPrompt, userContent, options?: CallOptions) {
       try {
-        return await pRetry(() => sendRequest(tier, systemPrompt, userContent, options), {
+        return await pRetry(() => throttle(() => sendRequest(tier, systemPrompt, userContent, options))(), {
           retries: MAX_RETRIES,
           minTimeout: MIN_RETRY_MS,
           onFailedAttempt: (error) => {

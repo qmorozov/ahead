@@ -82,3 +82,9 @@ export {
   pruneFeedback,
   type TagPreference,
 } from "./feedback";
+export {
+  upsertDiscoveryBatch,
+  getDiscoveryDates,
+  touchDiscoveryBatch,
+  pruneDiscovery,
+} from "./discovery";

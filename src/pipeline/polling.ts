@@ -31,6 +31,7 @@ import {
   pruneDeferredDb,
   deleteDeferredByChat,
   pruneFeedback,
+  pruneDiscovery,
   buildPreferenceSummary,
   type DeferredWrite,
   type TagPreference,
@@ -125,7 +126,6 @@ function collectNewJobs(
   chatId: string,
   ctx: ScoringContext,
 ): NewJob[] {
-  // batch-load seen state once instead of N+1 per-job DB queries
   const seenKeys = loadSeenKeys(chatId);
   const seenTitles = loadSeenTitles(chatId);
   const newJobs: NewJob[] = [];
@@ -140,7 +140,7 @@ function collectNewJobs(
       if (seenKeys.has(key)) continue;
 
       const normKey = normalizeForDedup(original.title, original.company || "unknown");
-      // within same cycle and cross-cycle dedup by title + company
+      // cross-source dedup by title+company
       if (cycleTitles.has(normKey)) continue;
       if (seenTitles.has(normKey)) continue;
       cycleTitles.add(normKey);
@@ -171,6 +171,7 @@ async function parseJobs(
   newJobs: NewJob[],
   settings: UserSettings,
   maxParses: number,
+  signal?: AbortSignal,
 ): Promise<Map<string, ParsedJob | null>> {
   const prioritized = prioritizeForParsing(newJobs, settings);
   debug(`Parsing ${prioritized.length} jobs for LLM (budget: ${maxParses})`);
@@ -180,7 +181,9 @@ async function parseJobs(
   await runWorkerPool(
     fullParseJobs,
     async ({ job, key }) => {
+      if (signal?.aborted) return;
       const fullParse = await parseJobDescription(key, job.description ?? "");
+      if (signal?.aborted) { parsedMap.set(key, fullParse); return; }
       parsedMap.set(key, fullParse ?? (await quickTagJob(key, job.description ?? "")));
     },
     LLM.PARSE_CONCURRENCY,
@@ -191,6 +194,7 @@ async function parseJobs(
     await runWorkerPool(
       quickTagJobs,
       async ({ job, key }) => {
+        if (signal?.aborted) return;
         parsedMap.set(key, await quickTagJob(key, job.description ?? ""));
       },
       LLM.PARSE_CONCURRENCY,
@@ -204,6 +208,7 @@ function classifyByRelevance(
   newJobs: NewJob[],
   parsedMap: Map<string, ParsedJob | null>,
   ctx: ScoringContext,
+  skipHardRejects = false,
 ): {
   relevant: NewJob[];
   irrelevant: NewJob[];
@@ -217,7 +222,7 @@ function classifyByRelevance(
 
   for (const entry of newJobs) {
     const parsed = parsedMap.get(entry.key) ?? null;
-    const { score, normalized, signals } = scoreJob(entry.job, parsed, ctx);
+    const { score, normalized, signals } = scoreJob(entry.job, parsed, ctx, skipHardRejects);
     scores.set(entry.key, score);
     signalsMap.set(entry.key, signals);
     const pass = score >= computeThreshold(ctx);
@@ -305,7 +310,7 @@ async function deliverJobs(
   if (firstRun) {
     const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
     const fresh = newJobs.filter((nj) => {
-      const ts = new Date(nj.job.publishedAt).getTime();
+      const ts = nj.job.discoveredAt ?? new Date(nj.job.publishedAt).getTime();
       return isNaN(ts) || ts > oneDayAgo;
     });
     return deliverIndividually(chatId, fresh.slice(0, 3), getParsed);
@@ -373,6 +378,8 @@ async function preFilterByLLM(
       chatId,
       allNew.map((nj) => nj.key),
     );
+    const titleKeys = allNew.filter((nj) => nj.job.company).map((nj) => nj.normKey);
+    if (titleKeys.length > 0) markTitleSeenBatch(chatId, titleKeys);
     log(`[${chatId}] No relevant jobs after LLM pre-filter.`);
   }
 
@@ -387,8 +394,7 @@ function finalizeSeenState(
   preFilteredJobs: NewJob[],
   irrelevantCount: number,
 ): void {
-  // companyCapped jobs are intentionally NOT marked seen they remain unseen
-  // so they can be delivered in future cycles when the per-company quota resets
+  // companyCapped stay unseen so they re-enter next cycle
   const processedJobs = [...markSeen, ...preFilteredJobs, ...delivered];
   markSeenBatch(
     chatId,
@@ -410,6 +416,7 @@ async function processForUser(
   settings: UserSettings,
   jobsBySource: Map<string, Job[]>,
   parseBudget: number = 20,
+  signal?: AbortSignal,
 ): Promise<void> {
   if (settings.paused) {
     log(`[${settings.chatId}] Skipped (paused).`);
@@ -422,39 +429,60 @@ async function processForUser(
   const ctx = buildScoringContext(settings);
   const feedbackPrefs = loadFeedbackIntoContext(chatId, ctx);
 
-  let allNew = collectNewJobs(jobsBySource, settings, chatId, ctx);
+  const allNew = collectNewJobs(jobsBySource, settings, chatId, ctx);
   logNewJobs(chatId, allNew);
   if (allNew.length === 0) {
     log(`[${chatId}] No new jobs.`);
     return;
   }
 
-  // Cap to prevent timeout - prioritize title/tag matches over description-only
+  // Warmup / first run / backfill: mark everything seen, skip LLM.
+  const isBackfill = allNew.length > MAX_NEW_PER_CYCLE * 2;
+  if (firstRun || isWarmupCycle || isBackfill) {
+    const bulkKeys: string[] = [];
+    for (const [sourceName, sourceJobs] of jobsBySource) {
+      if (settings.enabledSources.length > 0 && !settings.enabledSources.includes(sourceName))
+        continue;
+      for (const job of sourceJobs) bulkKeys.push(jobKey(job));
+    }
+    markSeenBatch(chatId, bulkKeys);
+
+    const reason = firstRun ? "first run" : isWarmupCycle ? "warmup" : "backfill";
+    log(`[${chatId}] ${reason}: marked ${bulkKeys.length} seen, ${allNew.length} new skipped (no LLM).`);
+    return;
+  }
+
+  // Cap and prioritize keyword-matched jobs
+  let capped = allNew;
   if (allNew.length > MAX_NEW_PER_CYCLE) {
     const prioritized = prioritizeForParsing(allNew, settings);
     const overflow = prioritized.slice(MAX_NEW_PER_CYCLE);
-    allNew = prioritized.slice(0, MAX_NEW_PER_CYCLE);
+    capped = prioritized.slice(0, MAX_NEW_PER_CYCLE);
     markSeenBatch(
       chatId,
       overflow.map((nj) => nj.key),
     );
-    log(`[${chatId}] Capped: processing ${allNew.length}, skipped ${overflow.length} weak matches`);
+    log(`[${chatId}] Capped: processing ${capped.length}, skipped ${overflow.length} weak matches`);
   }
 
   let finalized = false;
+  const companyCappedKeys = new Set<string>();
   try {
-    const { candidates, preFilteredJobs } = await preFilterByLLM(chatId, allNew, settings, feedbackPrefs);
+    if (signal?.aborted) return;
+    const { candidates, preFilteredJobs } = await preFilterByLLM(chatId, capped, settings, feedbackPrefs);
     if (candidates.length === 0) return;
 
-    const parsedMap = await parseJobs(candidates, settings, parseBudget);
+    if (signal?.aborted) return;
+    const parsedMap = await parseJobs(candidates, settings, parseBudget, signal);
     const { relevant, irrelevant, companyCapped, signalsMap } = classifyByRelevance(
       candidates,
       parsedMap,
       ctx,
     );
+    for (const nj of companyCapped) companyCappedKeys.add(nj.key);
     updatePollStats(
       stats,
-      allNew.length,
+      capped.length,
       relevant.length,
       irrelevant.map((nj) => ({
         key: nj.key,
@@ -471,36 +499,69 @@ async function processForUser(
         `[${chatId}] Filtered out ${irrelevant.length} irrelevant jobs via AI${deferredTotal > 0 ? ` (${deferredTotal} deferred)` : ""}`,
       );
 
-    if (relevant.length === 0) {
+    // Jobs without structured requirements get deferred — retry parse next cycle
+    const isFullyParsed = (nj: NewJob) => {
+      const p = parsedMap.get(nj.key);
+      return p != null && p.requirements.length > 0;
+    };
+    const parsedRelevant = relevant.filter(isFullyParsed);
+    const unparsedRelevant = relevant.filter((nj) => !isFullyParsed(nj));
+    if (unparsedRelevant.length > 0) {
+      // Don't mark seen — let them return next cycle for another parse attempt.
+      // Deferred_jobs tracks cycles to prevent infinite loop (max 3 attempts).
+      const now = Date.now();
+      const deferWrites: DeferredWrite[] = [];
+      const deferredMap = loadDeferredForChat(chatId);
+      for (const nj of unparsedRelevant) {
+        const prev = deferredMap.get(nj.key) ?? 0;
+        if (prev + 1 >= MAX_DEFER_CYCLES) {
+          // Max retries exceeded — send with raw formatting rather than lose the job
+          parsedRelevant.push(nj);
+          deferWrites.push({ type: "delete", jobKey: nj.key });
+        } else {
+          deferWrites.push({ type: "upsert", jobKey: nj.key, cycles: prev + 1, updatedAt: now });
+        }
+      }
+      if (deferWrites.length > 0) flushDeferredBatch(chatId, deferWrites);
+      log(`[${chatId}] Deferred ${unparsedRelevant.length - deferWrites.filter(w => w.type === "delete").length} unparsed relevant jobs`);
+    }
+
+    if (parsedRelevant.length === 0) {
+      const allProcessed = [...markSeen, ...preFilteredJobs];
       markSeenBatch(
         chatId,
-        [...markSeen, ...preFilteredJobs].map((nj) => nj.key),
+        allProcessed.map((nj) => nj.key),
       );
-      log(`[${chatId}] No relevant jobs (${candidates.length} filtered out).`);
+      const titleKeys = allProcessed.filter((nj) => nj.job.company).map((nj) => nj.normKey);
+      if (titleKeys.length > 0) markTitleSeenBatch(chatId, titleKeys);
+      log(`[${chatId}] No parsed relevant jobs (${candidates.length} filtered out).`);
       finalized = true;
       return;
     }
 
-    await enrichJobs(relevant);
-    const delivered = await deliverJobs(chatId, relevant, parsedMap, signalsMap, firstRun);
+    await enrichJobs(parsedRelevant);
+    const delivered = await deliverJobs(chatId, parsedRelevant, parsedMap, signalsMap, false);
     finalizeSeenState(chatId, stats, delivered, markSeen, preFilteredJobs, irrelevant.length);
     finalized = true;
   } finally {
-    // Safety net: if interrupted (timeout, error) before finalization,
-    // mark all jobs seen to prevent re-processing loop
     if (!finalized) {
+      // companyCapped jobs stay unseen — they'll be delivered in a future cycle
+      const interruptJobs = capped.filter((nj) => !companyCappedKeys.has(nj.key));
       markSeenBatch(
         chatId,
-        allNew.map((nj) => nj.key),
+        interruptJobs.map((nj) => nj.key),
       );
+      const titleKeys = interruptJobs.filter((nj) => nj.job.company).map((nj) => nj.normKey);
+      if (titleKeys.length > 0) markTitleSeenBatch(chatId, titleKeys);
       log(
-        `[${chatId}] Interrupted - marked ${allNew.length} jobs as seen to prevent re-processing`,
+        `[${chatId}] Interrupted - marked ${interruptJobs.length} jobs as seen to prevent re-processing`,
       );
     }
   }
 }
 
 let polling = false;
+let isWarmupCycle = true; // first poll cycle after process start
 
 export function isPolling(): boolean {
   return polling;
@@ -534,6 +595,7 @@ export async function pollAllUsers(): Promise<void> {
     pruneSeenTitles();
     pruneDeferredDb(Date.now() - DEFER_TTL_MS);
     pruneFeedback();
+    pruneDiscovery();
     for (const s of due) pruneSeen(s.chatId);
 
     const activeIds = new Set(active.map((s) => s.chatId));
@@ -553,7 +615,7 @@ export async function pollAllUsers(): Promise<void> {
           const timer = setTimeout(() => ac.abort(), PER_USER_TIMEOUT_MS);
           try {
             await Promise.race([
-              processForUser(settings, jobsBySource, parseBudget),
+              processForUser(settings, jobsBySource, parseBudget, ac.signal),
               new Promise<never>((_, reject) => {
                 ac.signal.addEventListener("abort", () =>
                   reject(new Error(`Timed out after ${PER_USER_TIMEOUT_MS / 1000}s`)),
@@ -573,6 +635,7 @@ export async function pollAllUsers(): Promise<void> {
 
     log("Poll cycle complete.");
   } finally {
+    isWarmupCycle = false;
     loggedJobs.clear();
     polling = false;
   }

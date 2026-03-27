@@ -128,6 +128,17 @@ const migrations: string[] = [
   );
   CREATE INDEX IF NOT EXISTS idx_feedback_chat ON feedback(chat_id);
   CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at);`,
+
+  `CREATE TABLE IF NOT EXISTS job_discovery (
+    job_key TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    source_published_at TEXT,
+    discovered_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    last_seen_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    is_backfill INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_discovery_source ON job_discovery(source);
+  CREATE INDEX IF NOT EXISTS idx_discovery_discovered ON job_discovery(discovered_at);`,
 ];
 
 const currentVersion = (db.pragma("user_version", { simple: true }) as number) ?? 0;

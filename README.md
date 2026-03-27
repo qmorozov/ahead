@@ -4,7 +4,7 @@ Telegram bot that monitors remote job boards and sends personalized job alerts.
 
 Aggregates from 15 sources (RemoteOK, Remotive, Jobicy, Himalayas, Arbeitnow, WeWorkRemotely, Djinni, TheMuse, WorkingNomads, RemoteFirstJobs, HN, Adzuna, Greenhouse, Lever, Ashby), scores each job against your profile, and sends a ranked digest.
 
-Uses Groq, Cerebras, and Gemini to extract structured data from descriptions (lightweight model for classification, heavy model for parsing). Providers cascade automatically — when one hits its quota, the next takes over. Falls back to keyword matching when all LLM providers are unavailable.
+Uses Groq, Cerebras, Gemini, and OpenRouter (Llama 3.1 8B) to extract structured data from descriptions. Providers cascade automatically — when one hits its quota, the next takes over. Free providers are tried first; OpenRouter (paid, prepaid) is the final fallback. Falls back to keyword matching when all providers are unavailable.
 
 ## Setup
 
@@ -14,7 +14,7 @@ Node.js 18+, bot token from [@BotFather](https://t.me/BotFather).
 npm install
 cp .env.example .env
 # fill in TELEGRAM_BOT_TOKEN (required)
-# optional: GROQ_API_KEY, CEREBRAS_API_KEY, GEMINI_API_KEY, ADZUNA_APP_ID/KEY
+# optional: GROQ_API_KEY, CEREBRAS_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, ADZUNA_APP_ID/KEY
 npm run dev
 ```
 
@@ -25,16 +25,17 @@ Production: `npm start`
 ## How it works
 
 ```
-14 sources → keyword/location/salary/age pre-filter
-  → LLM batch classification (optional)
-  → LLM structured parsing (optional, cached)
-  → 12 scorers + hard reject rules
+15 sources → keyword/location/salary/age pre-filter
+  → LLM batch classification (skip for small batches)
+  → regex pre-parse (salary, location, work arrangement from full text)
+  → LLM structured parsing (smart truncation, cached)
+  → 14 scorers + hard reject rules
   → company enrichment (Clearbit, Djinni)
-  → cross-source dedup
+  → cross-source dedup (job key + normalized title)
   → Telegram digest or individual messages
 ```
 
-Polling interval configurable per user (default 30 min, minimum 10 min). Each job parsed once and cached in SQLite. LLM providers: Groq (primary) → Cerebras → Gemini (fallback chain).
+Polling interval configurable per user (default 30 min, minimum 10 min). Each job parsed once and cached in SQLite. ATS jobs tracked via discovery table (first-seen date instead of unreliable publishedAt). Warmup cycles skip LLM to preserve quota. LLM cascade: Groq (free) → Cerebras (free) → Gemini (free) → OpenRouter (paid fallback).
 
 ## Commands
 
@@ -47,13 +48,13 @@ Polling interval configurable per user (default 30 min, minimum 10 min). Each jo
 
 ## Scripts
 
-- `npm run seed-boards` - download Greenhouse/Lever board slugs
+- `npm run seed-boards` - download Greenhouse/Lever/Ashby board slugs
 - `npm run build-tech-data` - regenerate tech ontology from MIND dataset
 - `npx tsx scripts/score-jobs.ts` - offline scoring analysis (requires `DEBUG=1` log data)
 
 ## Tech
 
-TypeScript, grammY, SQLite (better-sqlite3), Groq, Cerebras, Gemini, Zod.
+TypeScript, grammY, SQLite (better-sqlite3), Groq, Cerebras, Gemini, OpenRouter, Zod.
 
 ## License
 

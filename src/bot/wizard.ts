@@ -278,7 +278,7 @@ async function finishWizard(ctx: Context, session: WizardSession): Promise<void>
   if (!langs.includes("English")) langs.unshift("English");
   s.acceptedLanguages = langs.slice(0, WIZARD.MAX_ARRAY_ITEMS);
   s.excludeKeywords = [...session.excludeKeywords].slice(0, WIZARD.MAX_ARRAY_ITEMS);
-  s.enabledSources = [...ALL_SOURCE_NAMES];
+  s.enabledSources = [];
   saveSettings(s);
 
   try {

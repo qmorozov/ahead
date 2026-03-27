@@ -1,6 +1,6 @@
 import https from "node:https";
 import axios, { AxiosError } from "axios";
-import { Job } from "../types";
+import { Job, jobKey } from "../types";
 import {
   getActiveSlugs,
   getStaleSlugs,
@@ -9,6 +9,9 @@ import {
   setEtag,
   increment304,
   reset304,
+  upsertDiscoveryBatch,
+  getDiscoveryDates,
+  touchDiscoveryBatch,
 } from "../db";
 import { log, debug } from "../lib/logger";
 import { errorMessage, sleep } from "../lib/utils";
@@ -113,6 +116,9 @@ export function createATSBoardFetcher(config: ATSBoardConfig): () => Promise<Job
       stats.cached304++;
       increment304(slug, config.platform);
       updateBoard(slug, config.platform, true, jobsBySlug.get(slug)?.length ?? 0);
+      // Touch discovery so prune doesn't delete still-listed jobs
+      const cached = jobsBySlug.get(slug);
+      if (cached) touchDiscoveryBatch(cached.map((j) => jobKey(j)));
       return;
     }
 
@@ -120,6 +126,20 @@ export function createATSBoardFetcher(config: ATSBoardConfig): () => Promise<Job
     if (!warmup) reset304(slug, config.platform);
 
     if (result.jobs.length > 0) {
+      const keys = result.jobs.map((j) => jobKey(j));
+      upsertDiscoveryBatch(
+        result.jobs.map((j, i) => ({
+          jobKey: keys[i]!,
+          source: config.label,
+          sourcePublishedAt: j.publishedAt,
+          isBackfill: warmup,
+        })),
+      );
+      const dates = getDiscoveryDates(keys);
+      for (let i = 0; i < result.jobs.length; i++) {
+        result.jobs[i]!.discoveredAt = dates.get(keys[i]!);
+      }
+
       jobsBySlug.set(slug, result.jobs);
     } else {
       jobsBySlug.delete(slug);
