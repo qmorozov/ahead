@@ -41,6 +41,7 @@ import { Job, ParsedJob, jobKey } from "../types";
 import { parseJobDescription, classifyBatch, quickTagJob } from "./llm";
 import { normalizeForDedup, runWorkerPool } from "../lib/utils";
 import { enrichJobs } from "./enrich";
+import { fetchJobDetail, needsDetailFetch } from "./detail-fetch";
 import {
   UserPollStats,
   ensureStats,
@@ -183,7 +184,10 @@ async function parseJobs(
     async ({ job, key }) => {
       if (signal?.aborted) return;
       const fullParse = await parseJobDescription(key, job.description ?? "");
-      if (signal?.aborted) { parsedMap.set(key, fullParse); return; }
+      if (signal?.aborted) {
+        parsedMap.set(key, fullParse);
+        return;
+      }
       parsedMap.set(key, fullParse ?? (await quickTagJob(key, job.description ?? "")));
     },
     LLM.PARSE_CONCURRENCY,
@@ -448,7 +452,9 @@ async function processForUser(
     markSeenBatch(chatId, bulkKeys);
 
     const reason = firstRun ? "first run" : isWarmupCycle ? "warmup" : "backfill";
-    log(`[${chatId}] ${reason}: marked ${bulkKeys.length} seen, ${allNew.length} new skipped (no LLM).`);
+    log(
+      `[${chatId}] ${reason}: marked ${bulkKeys.length} seen, ${allNew.length} new skipped (no LLM).`,
+    );
     return;
   }
 
@@ -469,7 +475,12 @@ async function processForUser(
   const companyCappedKeys = new Set<string>();
   try {
     if (signal?.aborted) return;
-    const { candidates, preFilteredJobs } = await preFilterByLLM(chatId, capped, settings, feedbackPrefs);
+    const { candidates, preFilteredJobs } = await preFilterByLLM(
+      chatId,
+      capped,
+      settings,
+      feedbackPrefs,
+    );
     if (candidates.length === 0) return;
 
     if (signal?.aborted) return;
@@ -499,31 +510,37 @@ async function processForUser(
         `[${chatId}] Filtered out ${irrelevant.length} irrelevant jobs via AI${deferredTotal > 0 ? ` (${deferredTotal} deferred)` : ""}`,
       );
 
-    // Jobs without structured requirements get deferred — retry parse next cycle
-    const isFullyParsed = (nj: NewJob) => {
+    // Workday/SmartRecruiters listings lack descriptions fetch detail for relevant jobs
+    const hasParsedContent = (nj: NewJob) => {
       const p = parsedMap.get(nj.key);
       return p != null && p.requirements.length > 0;
     };
-    const parsedRelevant = relevant.filter(isFullyParsed);
-    const unparsedRelevant = relevant.filter((nj) => !isFullyParsed(nj));
-    if (unparsedRelevant.length > 0) {
-      // Don't mark seen — let them return next cycle for another parse attempt.
-      // Deferred_jobs tracks cycles to prevent infinite loop (max 3 attempts).
-      const now = Date.now();
-      const deferWrites: DeferredWrite[] = [];
-      const deferredMap = loadDeferredForChat(chatId);
-      for (const nj of unparsedRelevant) {
-        const prev = deferredMap.get(nj.key) ?? 0;
-        if (prev + 1 >= MAX_DEFER_CYCLES) {
-          // Max retries exceeded — send with raw formatting rather than lose the job
-          parsedRelevant.push(nj);
-          deferWrites.push({ type: "delete", jobKey: nj.key });
-        } else {
-          deferWrites.push({ type: "upsert", jobKey: nj.key, cycles: prev + 1, updatedAt: now });
-        }
-      }
-      if (deferWrites.length > 0) flushDeferredBatch(chatId, deferWrites);
-      log(`[${chatId}] Deferred ${unparsedRelevant.length - deferWrites.filter(w => w.type === "delete").length} unparsed relevant jobs`);
+
+    const unparsed = relevant.filter((nj) => !hasParsedContent(nj) && needsDetailFetch(nj.job));
+    if (unparsed.length > 0) {
+      await Promise.all(
+        unparsed.map(async (nj) => {
+          const detail = await fetchJobDetail(nj.job);
+          if (!detail) return;
+          nj.job.description = detail.deadline
+            ? `${detail.description}\n\n⏰ ${detail.deadline}`
+            : detail.description;
+          const parsed = await parseJobDescription(nj.key, detail.description);
+          if (parsed) parsedMap.set(nj.key, parsed);
+        }),
+      );
+      const resolved = unparsed.filter(hasParsedContent).length;
+      if (resolved > 0) log(`[${chatId}] Detail fetch resolved ${resolved} jobs`);
+    }
+
+    const parsedRelevant = relevant.filter(hasParsedContent);
+    const skipped = relevant.filter((nj) => !hasParsedContent(nj));
+    if (skipped.length > 0) {
+      markSeenBatch(
+        chatId,
+        skipped.map((nj) => nj.key),
+      );
+      log(`[${chatId}] Skipped ${skipped.length} unparsed relevant jobs`);
     }
 
     if (parsedRelevant.length === 0) {

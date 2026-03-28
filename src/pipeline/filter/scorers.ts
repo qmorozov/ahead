@@ -1,7 +1,16 @@
 import { franc } from "franc-min";
 import { SENIORITY_ORDER } from "../../lib/seniority";
 import { extractSalaryUsd } from "../../lib/salary";
-import { SCORING, PENALTY, STACK, FRESHNESS, POLLING, HIGH_QUALITY_SOURCES, FEEDBACK, DISCOVERY } from "../../constants";
+import {
+  SCORING,
+  PENALTY,
+  STACK,
+  FRESHNESS,
+  POLLING,
+  HIGH_QUALITY_SOURCES,
+  FEEDBACK,
+  DISCOVERY,
+} from "../../constants";
 import { CANONICAL_TO_DOMAINS, ALL_KNOWN_TECHS } from "../../lib/tech-data";
 import { testKeyword, matchesAny, normalizeTag, GENERIC_TOOLS } from "./matching";
 import { ROLE_CONFIGS, GENERIC_DEV_PATTERN } from "./roles";
@@ -68,8 +77,16 @@ export function scoreSeniority({ job, parsed, ctx }: ScorerInput): ScorerResult 
   const known = ctx.senioritySet.size > 0 && seniorityDetected(job.title, parsed);
   if (!known) return { score: 0, signals: [] };
 
-  if (!matchesSeniority(job.title, parsed, ctx.senioritySet)) {
+  const match = matchesSeniority(job.title, parsed, ctx.senioritySet);
+
+  // Title says "Senior" but user wants "Middle" -> high confidence, hard reject
+  if (match === "title_mismatch") {
     return { score: 0, signals: ["seniority mismatch"], hardReject: true };
+  }
+
+  // LLM says "Senior" but title is neutral -> lower confidence, soft penalty
+  if (match === "parsed_mismatch") {
+    return { score: PENALTY.OVERQUALIFIED, signals: ["seniority mismatch (parsed)"] };
   }
 
   let score = SCORING.SENIORITY_MATCH;
@@ -208,7 +225,8 @@ function matchTitleRole(
       const isImplied = !original.has(r) && !original.has("fullstack");
       const isFullstackMatch = r === "fullstack" && !original.has("fullstack");
       return {
-        score: isImplied && !isFullstackMatch ? Math.round(SCORING.ROLE_MATCH / 2) : SCORING.ROLE_MATCH,
+        score:
+          isImplied && !isFullstackMatch ? Math.round(SCORING.ROLE_MATCH / 2) : SCORING.ROLE_MATCH,
         signal: isImplied ? `~${r}` : r,
       };
     }
@@ -428,7 +446,11 @@ export function scorePrimaryStack({ job, ctx, analysis }: ScorerInput): ScorerRe
 
   const normalized = [
     ...analysis.effectiveTags.map(normalizeTag),
-    ...job.title.toLowerCase().split(/[\s,|·•–—/()[\]{}]+/).map(normalizeTag).filter(Boolean),
+    ...job.title
+      .toLowerCase()
+      .split(/[\s,|·•–—/()[\]{}]+/)
+      .map(normalizeTag)
+      .filter(Boolean),
   ];
   if (normalized.some((t) => ctx.primaryStackSet.has(t))) return { score: 0, signals: [] };
 

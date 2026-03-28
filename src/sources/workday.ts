@@ -16,6 +16,15 @@ const ResponseSchema = z.object({
   jobPostings: z.array(JobSchema).default([]),
 });
 
+function parsePostedOn(raw: string): string {
+  const now = Date.now();
+  if (/today/i.test(raw)) return new Date(now).toISOString();
+  if (/yesterday/i.test(raw)) return new Date(now - 86_400_000).toISOString();
+  const days = raw.match(/(\d+)\+?\s*days?\s*ago/i);
+  if (days) return new Date(now - parseInt(days[1]!) * 86_400_000).toISOString();
+  return new Date(now).toISOString();
+}
+
 function parseSlug(slug: string): { company: string; instance: string; portal: string } | null {
   const parts = slug.split("|");
   if (parts.length < 3) return null;
@@ -51,7 +60,7 @@ export const fetchWorkday = createATSBoardFetcher({
         url: `${baseUrl}${j.externalPath}`,
         source: "Workday",
         tags: [],
-        publishedAt: new Date().toISOString(),
+        publishedAt: parsePostedOn(j.postedOn),
       };
     });
   },

@@ -155,8 +155,13 @@ export function formatMessage(job: Job, parsed: ParsedJob | null): string {
   const level = parsed?.seniority || job.seniority || detectSeniority(job.title);
   const salary = parsed?.salary || job.salary;
   const tags = techTags(job, parsed, 5);
-  const ago = timeAgo(job.discoveredAt ?? job.publishedAt);
-  const agoLabel = job.discoveredAt ? "Found" : "Posted";
+  const posted = timeAgo(job.publishedAt);
+  const found = job.discoveredAt ? timeAgo(job.discoveredAt) : null;
+
+  // Show both dates when they differ meaningfully (>1 day apart)
+  const publishedMs = new Date(job.publishedAt).getTime();
+  const discoveredMs = job.discoveredAt ?? publishedMs;
+  const datesClose = Math.abs(discoveredMs - publishedMs) < 86_400_000;
 
   const titleUrl = isSafeUrl(job.url) ? escapeHtml(job.url) : "";
   const lines = [
@@ -170,7 +175,13 @@ export function formatMessage(job: Job, parsed: ParsedJob | null): string {
     tags.length > 0 && `<b>Stack:</b> ${escapeHtml(tags.join(", "))}`,
   ];
   const headerText = lines.filter(Boolean).join("\n");
-  const footer = ago ? `\n\n⚡ ${agoLabel} ${ago}` : "";
+  let footer = "";
+  if (found && posted && !datesClose) {
+    footer = `\n\n⚡ Posted ${posted} · Found ${found}`;
+  } else {
+    const ago = found ?? posted;
+    footer = ago ? `\n\n⚡ Posted ${ago}` : "";
+  }
 
   const descBudget = DELIVERY.MAX_LENGTH - headerText.length - footer.length - "\n\n".length;
   if (descBudget <= 200) return headerText + footer;

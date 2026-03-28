@@ -5,8 +5,8 @@ export function matchesSeniority(
   title: string,
   parsed: ParsedJob | null,
   allowed: Set<string>,
-): boolean {
-  if (allowed.size === 0) return true;
+): "match" | "title_mismatch" | "parsed_mismatch" | "unknown" {
+  if (allowed.size === 0) return "match";
 
   let titleDetected = false;
   let titleMatch = false;
@@ -17,10 +17,12 @@ export function matchesSeniority(
     }
   }
 
-  if (titleDetected && !titleMatch) return false;
-  if (titleMatch) return true;
-  if (parsed?.seniority) return allowed.has(parsed.seniority.toLowerCase());
-  return true;
+  // Title seniority is high-confidence — hard reject on mismatch
+  if (titleDetected && !titleMatch) return "title_mismatch";
+  if (titleMatch) return "match";
+  // LLM-extracted seniority is lower confidence — soft penalty, not hard reject
+  if (parsed?.seniority && !allowed.has(parsed.seniority.toLowerCase())) return "parsed_mismatch";
+  return parsed?.seniority ? "match" : "unknown";
 }
 
 export function seniorityDetected(title: string, parsed: ParsedJob | null): boolean {
